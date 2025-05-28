@@ -72,12 +72,17 @@ class Backend:
     def __post_init__(self):
         self.metrics = Metrics()
         self._total_pubkey_fetch_errors = 0
+        self._last_pubkey_fetch_attempt = 0
         self._pubkey = self._fetch_pubkey()
 
     @property
     def pubkey(self) -> Optional[RSA.RsaKey]:
         if self._pubkey is None:
-            self._pubkey = self._fetch_pubkey()
+            # Add a cooldown period between retry attempts (60 seconds)
+            current_time = time.time()
+            if current_time - self._last_pubkey_fetch_attempt > 60:
+                self._last_pubkey_fetch_attempt = current_time
+                self._pubkey = self._fetch_pubkey()
         return self._pubkey
 
     @cached_property
@@ -97,23 +102,53 @@ class Backend:
         return handler_fn
 
     #######################################Private#######################################
+    
     def _fetch_pubkey(self):
-        command = ["curl", "-X", "GET", "https://run.vast.ai/pubkey/"]
-        result = subprocess.check_output(command, universal_newlines=True)
-        log.debug("public key:")
-        log.debug(result)
+        result = None
+        
+        try:
+            import requests
+            response = requests.get("https://run.vast.ai/pubkey/", timeout=30)
+            if response.status_code == 200:
+                result = response.text
+                log.debug("public key fetched via requests:")
+                log.debug(result)
+            else:
+                raise Exception(f"HTTP {response.status_code}")
+        except Exception as e:
+            log.debug(f"Error fetching pubkey with requests: {e}, trying curl...")
+            # Fallback to curl
+            command = ["curl", "-X", "GET", "https://run.vast.ai/pubkey/"]
+            try:
+                result = subprocess.check_output(command, universal_newlines=True)
+                log.debug("public key fetched via curl:")
+                log.debug(result)
+            except subprocess.CalledProcessError as e:
+                log.debug(f"Error fetching pubkey with curl: {e}")
+                self._total_pubkey_fetch_errors += 1
+                if self._total_pubkey_fetch_errors >= MAX_PUBKEY_FETCH_ATTEMPTS:
+                    log.error("Failed to fetch autoscaler pubkey after maximum attempts")
+                return None
+        
+        if result is None:
+            self._total_pubkey_fetch_errors += 1
+            if self._total_pubkey_fetch_errors >= MAX_PUBKEY_FETCH_ATTEMPTS:
+                log.error("Failed to fetch autoscaler pubkey after maximum attempts")
+            return None
+        
         key = None
         for _ in range(5):
             try:
                 key = RSA.import_key(result)
                 break
             except ValueError as e:
-                log.debug(f"Error downloading key: {e}")
+                log.debug(f"Error importing key: {e}")
                 time.sleep(15)
+        
         if key is None:
             self._total_pubkey_fetch_errors += 1
             if self._total_pubkey_fetch_errors >= MAX_PUBKEY_FETCH_ATTEMPTS:
-                self.backend_errored("Failed to get autoscaler pubkey")
+                log.error("Failed to import autoscaler pubkey after maximum attempts")
         return key
 
     async def __handle_request(
