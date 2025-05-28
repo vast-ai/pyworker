@@ -129,6 +129,7 @@ backend = Backend(
     model_server_url=MODEL_SERVER_URL,
     model_log_file=os.environ["MODEL_LOG"],
     allow_parallel_requests=True,
+    model_type= "hello_world",  # this is a custom model type, you can use any string here
     # give the backend a handler instance that is used for benchmarking
     # number of benchmark run and number of words for a random benchmark run are given
     benchmark_handler=GenerateHandler(benchmark_runs=3, benchmark_words=256),

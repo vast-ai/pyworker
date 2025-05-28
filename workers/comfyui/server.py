@@ -107,6 +107,7 @@ backend = Backend(
     model_server_url=MODEL_SERVER_URL,
     model_log_file=os.environ["MODEL_LOG"],
     allow_parallel_requests=False,
+    model_type= "comfyui",
     benchmark_handler=DefaultComfyWorkflowHandler(
         benchmark_runs=3, benchmark_words=100
     ),

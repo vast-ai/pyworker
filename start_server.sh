@@ -49,12 +49,12 @@ if [ ! -d "$ENV_PATH" ]
 then
     apt install -y python3.10-venv
     echo "setting up venv"
-    git clone https://github.com/vast-ai/pyworker "$SERVER_DIR"
+    git clone https://github.com/nakinnubis/pyworker "$SERVER_DIR"
 
     python3 -m venv "$WORKSPACE_DIR/worker-env"
     source "$WORKSPACE_DIR/worker-env/bin/activate"
 
-    pip install -r vast-pyworker/requirements.txt
+    pip install -r "$SERVER_DIR/requirements.txt"
 
     touch ~/.no_auto_tmux
 else
