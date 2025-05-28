@@ -72,17 +72,12 @@ class Backend:
     def __post_init__(self):
         self.metrics = Metrics()
         self._total_pubkey_fetch_errors = 0
-        self._last_pubkey_fetch_attempt = 0
         self._pubkey = self._fetch_pubkey()
 
     @property
     def pubkey(self) -> Optional[RSA.RsaKey]:
         if self._pubkey is None:
-            # Add a cooldown period between retry attempts (60 seconds)
-            current_time = time.time()
-            if current_time - self._last_pubkey_fetch_attempt > 60:
-                self._last_pubkey_fetch_attempt = current_time
-                self._pubkey = self._fetch_pubkey()
+            self._pubkey = self._fetch_pubkey()
         return self._pubkey
 
     @cached_property
@@ -102,53 +97,23 @@ class Backend:
         return handler_fn
 
     #######################################Private#######################################
-    
     def _fetch_pubkey(self):
-        result = None
-        
-        try:
-            import requests
-            response = requests.get("https://run.vast.ai/pubkey/", timeout=30)
-            if response.status_code == 200:
-                result = response.text
-                log.debug("public key fetched via requests:")
-                log.debug(result)
-            else:
-                raise Exception(f"HTTP {response.status_code}")
-        except Exception as e:
-            log.debug(f"Error fetching pubkey with requests: {e}, trying curl...")
-            # Fallback to curl
-            command = ["curl", "-X", "GET", "https://run.vast.ai/pubkey/"]
-            try:
-                result = subprocess.check_output(command, universal_newlines=True)
-                log.debug("public key fetched via curl:")
-                log.debug(result)
-            except subprocess.CalledProcessError as e:
-                log.debug(f"Error fetching pubkey with curl: {e}")
-                self._total_pubkey_fetch_errors += 1
-                if self._total_pubkey_fetch_errors >= MAX_PUBKEY_FETCH_ATTEMPTS:
-                    log.error("Failed to fetch autoscaler pubkey after maximum attempts")
-                return None
-        
-        if result is None:
-            self._total_pubkey_fetch_errors += 1
-            if self._total_pubkey_fetch_errors >= MAX_PUBKEY_FETCH_ATTEMPTS:
-                log.error("Failed to fetch autoscaler pubkey after maximum attempts")
-            return None
-        
+        command = ["curl", "-X", "GET", "https://run.vast.ai/pubkey/"]
+        result = subprocess.check_output(command, universal_newlines=True)
+        log.debug("public key:")
+        log.debug(result)
         key = None
         for _ in range(5):
             try:
                 key = RSA.import_key(result)
                 break
             except ValueError as e:
-                log.debug(f"Error importing key: {e}")
+                log.debug(f"Error downloading key: {e}")
                 time.sleep(15)
-        
         if key is None:
             self._total_pubkey_fetch_errors += 1
             if self._total_pubkey_fetch_errors >= MAX_PUBKEY_FETCH_ATTEMPTS:
-                log.error("Failed to import autoscaler pubkey after maximum attempts")
+                self.backend_errored("Failed to get autoscaler pubkey")
         return key
 
     async def __handle_request(
@@ -285,22 +250,29 @@ class Backend:
             return False
 
     async def __model_health_check(self) -> Dict[str, str]:
+        """
+        Check the health status of the model server.
+        
+        Returns:
+            Dict with 'status' key containing a MODELLOADEDSTATUS value and
+            'reason' key containing details about the status.
+        """
         match self.model_type:
-            case SUPPORTEDMODEL.COMFY_UI.value:
+            case SUPPORTEDMODEL.COMFY_UI:
                 # TODO: handle comfyUI when available
                 return {
-                        'status': MODELLOADEDSTATUS.UNREADY.value, 
-                        'reason': 'ComfyUi health API not implemented yet'
-                        }
-            case SUPPORTEDMODEL.TGI.value:
-                url = f'{self.model_server_url}/health'
-                try:
+                    'status': MODELLOADEDSTATUS.UNREADY.value, 
+                    'reason': 'ComfyUi health API not implemented yet'
+                }
+            case SUPPORTEDMODEL.TGI:
+                url = f'{self.model_server_url}/health'                try:
                     async with ClientSession() as session:
                         async with session.get(url) as health_response:
-                            if health_response.status == 200:
+                            status_code = health_response.status
+                            if status_code == 200:
                                 message = await health_response.text()
                                 return {'status': MODELLOADEDSTATUS.READY.value, 'reason': message}
-                            elif health_response.status == 503:
+                            elif status_code == 503:
                                 try:
                                     error_response = await health_response.json()
                                     error = error_response.get("error", "")
@@ -312,17 +284,19 @@ class Backend:
                             else:
                                 return {
                                     'status': MODELLOADEDSTATUS.DEFERRED_TO_LOG_FILE.value,
-                                    'reason': 'Model health endpoint not ready'
+                                    'reason': f'Model health endpoint not ready (status: {status_code})'
                                 }
                 except Exception as e:
+                    log.debug(f"Health check exception: {str(e)}")
                     return {
                         'status': MODELLOADEDSTATUS.FAILED.value,
-                        'reason': f'Exception during health check: {e}'
+                        'reason': f'Exception during health check: {str(e)}'
                     }
                 
-        return {'status': MODELLOADEDSTATUS.MODEL_NOT_SUPPORTED.value,
-                 'reason': 'Model type not supported by pyworker yet'
-                 }
+        return {
+            'status': MODELLOADEDSTATUS.MODEL_NOT_SUPPORTED.value,
+            'reason': 'Model type not supported by pyworker yet'
+        }
 
 
     async def __read_logs(self) -> Awaitable[NoReturn]:
@@ -383,14 +357,13 @@ class Backend:
             """
             Implement this function to handle each log line for your model.
             This function should mutate self.system_metrics and self.model_metrics
-            """
-            #TODO: When we confirm comfyUI has an health endpoint we will not need the if logic
-            if self.model_type != SUPPORTEDMODEL.TGI.value:
+            """            #TODO: When we confirm comfyUI has an health endpoint we will not need the if logic
+            if  self.model_type != SUPPORTEDMODEL.TGI.value:
                 await log_action_parser(log_line)
             else:
                 health_check_status_report = await self.__model_health_check()
                 reason = health_check_status_report.get('reason', None)
-                if health_check_status_report.get('status', None) == MODELLOADEDSTATUS.READY.value:
+                if health_check_status_report.get('status', None) == MODELLOADEDSTATUS.READY:
                     log.debug(
                             f"Got log line indicating model is loaded: {reason}"
                         )
@@ -407,7 +380,7 @@ class Backend:
                             f"failed to connect to comfyui api during benchmark"
                         )
                         self.backend_errored(str(e))
-                elif health_check_status_report.get('status', None) == MODELLOADEDSTATUS.FAILED.value:
+                elif health_check_status_report.get('status', None) == MODELLOADEDSTATUS.FAILED:
                     log.debug(f"Got log line indicating error: {reason}")
                     self.backend_errored(MODELLOADEDSTATUS.FAILED.value)
                     
