@@ -265,7 +265,8 @@ class Backend:
                     'reason': 'ComfyUi health API not implemented yet'
                 }
             case SUPPORTEDMODEL.TGI:
-                url = f'{self.model_server_url}/health'                try:
+                url = f'{self.model_server_url}/health'                
+                try:
                     async with ClientSession() as session:
                         async with session.get(url) as health_response:
                             status_code = health_response.status
