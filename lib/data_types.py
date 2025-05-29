@@ -176,7 +176,6 @@ class EndpointHandler(ABC, Generic[ApiPayload_T]):
         else:
             # This path should ideally not be reached if logic is correct
             # and all required fields are present and valid.
-            # Consider logging or raising a more specific error here.
             log.error("Failed to deserialize request data due to missing auth_data or payload after validation.")
             raise Exception("error deserializing request data")
 

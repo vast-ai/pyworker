@@ -100,7 +100,6 @@ async def tgi_health_check(model_server_url: str) -> Dict[str, str]:
                         'reason': f'Model health endpoint not ready (status: {status_code})'
                     }
     except Exception as e:
-        # Consider logging the exception here if a logger is available
         return {
             'status': MODELLOADEDSTATUS.FAILED.value,
             'reason': f'Exception during health check: {str(e)}'
