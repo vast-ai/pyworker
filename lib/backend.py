@@ -55,9 +55,7 @@ class Backend:
     model_type: str
     model_log_file: str
     allow_parallel_requests: bool
-    benchmark_handler: (
-        EndpointHandler[ApiPayload_T]  # this endpoint handler will be used for benchmarking
-    )
+    benchmark_handler: EndpointHandler  # this endpoint handler will be used for benchmarking
     log_actions: List[Tuple[LogAction, str]]
     reqnum = -1
     msg_history = []

@@ -24,11 +24,11 @@ class JsonDataException(Exception):
 
 
 
-
+ApiPayload_T = TypeVar("ApiPayload_T", bound="ApiPayload")  # Forward reference for ApiPayload itself
 
 @dataclass
 class ApiPayload(ABC):
-    ApiPayload_T = TypeVar("ApiPayload_T", bound="ApiPayload")  # Forward reference for ApiPayload itself
+   
     @classmethod
     @abstractmethod
     def for_test(cls: Type[ApiPayload_T]) -> ApiPayload_T:  # Use ApiPayload_T
@@ -86,7 +86,7 @@ class AuthData:
         )
 
 
-ApiPayload_T = TypeVar("ApiPayload_T", bound=ApiPayload)
+
 
 
 class MODELLOADEDSTATUS(Enum):
