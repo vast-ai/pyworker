@@ -318,7 +318,8 @@ class Backend:
             """
             Implement this function to handle each log line for your model.
             This function should mutate self.system_metrics and self.model_metrics
-            """            #TODO: When we confirm comfyUI has an health endpoint we will not need the if logic
+            """
+            #TODO: When we confirm comfyUI has an health endpoint we will not need the if logic
             if  self.model_type != SUPPORTEDMODEL.TGI.value:
                 await log_action_parser(log_line)
             else:
@@ -328,8 +329,8 @@ class Backend:
                     log.debug(
                             f"Got log line indicating model is loaded: {reason}"
                         )
-                        # some backends need a few seconds after logging successful startup before
-                        # they can begin accepting requests
+                    # some backends need a few seconds after logging successful startup before
+                    # they can begin accepting requests
                     await sleep(5)
                     try:
                         max_throughput = await run_benchmark()

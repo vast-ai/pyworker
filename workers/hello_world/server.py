@@ -91,17 +91,6 @@ class GenerateHandler(EndpointHandler[InputData]):
         """
         url = f'{model_server_url}/health' # Or appropriate health endpoint
         try:
-            # Assuming backend session is available or create a new one
-            # This might need self.backend.session or similar if Backend instance is accessible
-            # For simplicity, creating a new session or using a passed-in one.
-            # If your EndpointHandler has access to the Backend's session, use that.
-            # For now, let's assume a simple check or a placeholder.
-            # async with ClientSession() as session: # Requires ClientSession import
-            #     async with session.get(url) as health_response:
-            #         if health_response.status == 200:
-            #             return {'status': MODELLOADEDSTATUS.READY.value, 'reason': 'Healthy'}
-            #         else:
-            #             return {'status': MODELLOADEDSTATUS.UNREADY.value, 'reason': f'Unhealthy: {health_response.status}'}
             # Placeholder implementation:
             log.warning("Using placeholder health check for hello_world. Implement actual health check.")
             return {'status': MODELLOADEDSTATUS.READY.value, 'reason': 'Placeholder: Assumed healthy'}
