@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Union, Type
+from typing import Union, Type, Dict
 import dataclasses
 
 from aiohttp import web, ClientResponse # type: ignore
@@ -8,7 +8,7 @@ from aiohttp import web, ClientResponse # type: ignore
 from lib.backend import Backend, LogAction
 from lib.data_types import EndpointHandler
 from lib.server import start_server
-from .data_types import InputData
+from .data_types import InputData, tgi_health_check, MODELLOADEDSTATUS # Added tgi_health_check and MODELLOADEDSTATUS
 
 
 MODEL_SERVER_URL = "http://0.0.0.0:5001"
@@ -53,6 +53,9 @@ class GenerateHandler(EndpointHandler[InputData]):
                 log.debug("SENDING RESPONSE: ERROR: unknown code")
                 return web.Response(status=code)
 
+    async def model_health_check(self, model_server_url: str) -> Dict[str, str]:
+        return await tgi_health_check(model_server_url)
+
 
 class GenerateStreamHandler(EndpointHandler[InputData]):
     @property
@@ -83,6 +86,9 @@ class GenerateStreamHandler(EndpointHandler[InputData]):
             case code:
                 log.debug("SENDING RESPONSE: ERROR: unknown code")
                 return web.Response(status=code)
+
+    async def model_health_check(self, model_server_url: str) -> Dict[str, str]:
+        return await tgi_health_check(model_server_url)
 
 
 backend = Backend(

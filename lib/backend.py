@@ -24,6 +24,7 @@ from lib.data_types import (
     LogAction,
     ApiPayload_T,
     JsonDataException,
+    MODELLOADEDSTATUS, # Add MODELLOADEDSTATUS import
 )
 
 MSG_HISTORY_LEN = 100
@@ -38,13 +39,6 @@ class SUPPORTEDMODEL(Enum):
     #We should populate this with all models to be supported in the future or better still we could read this from somewhere
     COMFY_UI = 'comfyui'
     TGI = 'tgi'
-
-class MODELLOADEDSTATUS(Enum):
-    READY = 'ready'
-    UNREADY = 'unready'
-    FAILED = 'failed'
-    DEFERRED_TO_LOG_FILE = 'deferred_to_log_file'
-    MODEL_NOT_SUPPORTED = 'model_not_supported'
 
 
 @dataclasses.dataclass
@@ -62,7 +56,7 @@ class Backend:
     model_log_file: str
     allow_parallel_requests: bool
     benchmark_handler: (
-        EndpointHandler  # this endpoint handler will be used for benchmarking
+        EndpointHandler[ApiPayload_T]  # this endpoint handler will be used for benchmarking
     )
     log_actions: List[Tuple[LogAction, str]]
     reqnum = -1
@@ -251,54 +245,22 @@ class Backend:
 
     async def __model_health_check(self) -> Dict[str, str]:
         """
-        Check the health status of the model server.
+        Check the health status of the model server using the EndpointHandler.
         
         Returns:
             Dict with 'status' key containing a MODELLOADEDSTATUS value and
             'reason' key containing details about the status.
         """
-        match self.model_type:
-            case SUPPORTEDMODEL.COMFY_UI:
-                # TODO: handle comfyUI when available
-                return {
-                    'status': MODELLOADEDSTATUS.UNREADY.value, 
-                    'reason': 'ComfyUi health API not implemented yet'
-                }
-            case SUPPORTEDMODEL.TGI:
-                url = f'{self.model_server_url}/health'                
-                try:
-                    async with ClientSession() as session:
-                        async with session.get(url) as health_response:
-                            status_code = health_response.status
-                            if status_code == 200:
-                                message = await health_response.text()
-                                return {'status': MODELLOADEDSTATUS.READY.value, 'reason': message}
-                            elif status_code == 503:
-                                try:
-                                    error_response = await health_response.json()
-                                    error = error_response.get("error", "")
-                                    error_type = error_response.get("error_type", "")
-                                    reason = f'{error} {error_type}'.strip()
-                                except Exception:
-                                    reason = "Unhealthy (invalid JSON error response)"
-                                return {'status': MODELLOADEDSTATUS.FAILED.value, 'reason': reason}
-                            else:
-                                return {
-                                    'status': MODELLOADEDSTATUS.DEFERRED_TO_LOG_FILE.value,
-                                    'reason': f'Model health endpoint not ready (status: {status_code})'
-                                }
-                except Exception as e:
-                    log.debug(f"Health check exception: {str(e)}")
-                    return {
-                        'status': MODELLOADEDSTATUS.FAILED.value,
-                        'reason': f'Exception during health check: {str(e)}'
-                    }
-                
-        return {
-            'status': MODELLOADEDSTATUS.MODEL_NOT_SUPPORTED.value,
-            'reason': 'Model type not supported by pyworker yet'
-        }
-
+        if hasattr(self.benchmark_handler, 'model_health_check') and callable(getattr(self.benchmark_handler, 'model_health_check')) :
+            return await self.benchmark_handler.model_health_check(self.model_server_url)
+        else:
+            # Fallback or error if the handler doesn't support health checks
+            # This case should ideally not be reached if handlers are correctly implemented.
+            log.error(f"Health check not implemented for handler: {type(self.benchmark_handler).__name__}")
+            return {
+                'status': MODELLOADEDSTATUS.MODEL_NOT_SUPPORTED.value,
+                'reason': f'Health check not implemented for model type handled by {type(self.benchmark_handler).__name__}'
+            }
 
     async def __read_logs(self) -> Awaitable[NoReturn]:
 

@@ -8,8 +8,9 @@ from typing import Dict, Any
 from functools import cache
 from math import ceil
 from enum import Enum
+from aiohttp import ClientSession
 
-from lib.data_types import ApiPayload, JsonDataException
+from lib.data_types import ApiPayload, JsonDataException, MODELLOADEDSTATUS
 
 
 with open("workers/comfyui/misc/test_prompts.txt", "r") as f:
@@ -165,6 +166,17 @@ class DefaultComfyWorkflowData(ApiPayload):
                 if k in inspect.signature(cls).parameters
             }
         )
+
+async def comfyui_health_check(model_server_url: str) -> Dict[str, str]:
+    """
+    Check the health status of the ComfyUI model server.
+    """
+    # TODO: Implement actual health check for ComfyUI when its API is available.
+    # This is a placeholder.
+    return {
+        'status': MODELLOADEDSTATUS.UNREADY.value,
+        'reason': 'ComfyUI health API not implemented yet'
+    }
 
 
 @dataclasses.dataclass
