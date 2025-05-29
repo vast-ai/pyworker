@@ -23,12 +23,12 @@ class JsonDataException(Exception):
         self.message = json_msg
 
 
-ApiPayload_T = TypeVar("ApiPayload_T", bound="ApiPayload")  # Forward reference for ApiPayload itself
+
 
 
 @dataclass
 class ApiPayload(ABC):
-
+    ApiPayload_T = TypeVar("ApiPayload_T", bound="ApiPayload")  # Forward reference for ApiPayload itself
     @classmethod
     @abstractmethod
     def for_test(cls: Type[ApiPayload_T]) -> ApiPayload_T:  # Use ApiPayload_T
