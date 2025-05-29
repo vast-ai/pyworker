@@ -186,7 +186,7 @@ class CustomComfyWorkflowData(ApiPayload):
 
     @classmethod
     def for_test(cls):
-        raise NotImplemented("Custom comfy workflow is not used for testing")
+        raise NotImplementedError("Custom comfy workflow is not used for testing")
 
     def count_workload(self) -> float:
         return count_workload(
