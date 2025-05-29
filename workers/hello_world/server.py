@@ -18,7 +18,7 @@ from typing import Dict, Any, Union, Type
 from aiohttp import web, ClientResponse
 
 from lib.backend import Backend, LogAction
-from lib.data_types import EndpointHandler, MODELLOADEDSTATUS
+from lib.data_types import EndpointHandler
 from lib.server import start_server
 from .data_types import InputData
 
@@ -68,18 +68,6 @@ class GenerateHandler(EndpointHandler[InputData]):
         """
         return InputData.for_test()
 
-    def health_check(self) -> MODELLOADEDSTATUS:
-        """Simple health check that returns the status enum directly"""
-        # Hello World model is always ready for demo purposes
-        return MODELLOADEDSTATUS.READY
-
-    async def model_health_check(self, model_server_url: str) -> Dict[str, str]:
-        """Hello World model health check - always returns ready for demo purposes"""
-        return {
-            'status': MODELLOADEDSTATUS.READY.value, 
-            'reason': 'Hello World model is always ready'
-        }
-
     async def generate_client_response(
         self, client_request: web.Request, model_response: ClientResponse
     ) -> Union[web.Response, web.StreamResponse]:
@@ -115,18 +103,6 @@ class GenerateStreamHandler(EndpointHandler[InputData]):
 
     def make_benchmark_payload(self) -> InputData:
         return InputData.for_test()
-
-    def health_check(self) -> MODELLOADEDSTATUS:
-        """Simple health check that returns the status enum directly"""
-        # Hello World model is always ready for demo purposes
-        return MODELLOADEDSTATUS.READY
-
-    async def model_health_check(self, model_server_url: str) -> Dict[str, str]:
-        """Hello World model health check - always returns ready for demo purposes"""
-        return {
-            'status': MODELLOADEDSTATUS.READY.value, 
-            'reason': 'Hello World model is always ready'
-        }
 
     async def generate_client_response(
         self, client_request: web.Request, model_response: ClientResponse

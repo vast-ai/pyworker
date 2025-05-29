@@ -24,8 +24,6 @@ from lib.data_types import (
     LogAction,
     ApiPayload_T,
     JsonDataException,
-    SUPPORTEDMODEL,
-    MODELLOADEDSTATUS,
 )
 
 MSG_HISTORY_LEN = 100
@@ -35,6 +33,18 @@ log = logging.getLogger(__file__)
 LOG_POLL_INTERVAL = 0.1
 BENCHMARK_INDICATOR_FILE = ".has_benchmark"
 MAX_PUBKEY_FETCH_ATTEMPTS = 3
+
+class SUPPORTEDMODEL(Enum):
+    #We should populate this with all models to be supported in the future or better still we could read this from somewhere
+    COMFY_UI = 'comfyui'
+    TGI = 'tgi'
+
+class MODELLOADEDSTATUS(Enum):
+    READY = 'ready'
+    UNREADY = 'unready'
+    FAILED = 'failed'
+    DEFERRED_TO_LOG_FILE = 'deferred_to_log_file'
+    MODEL_NOT_SUPPORTED = 'model_not_supported'
 
 
 @dataclasses.dataclass
@@ -241,13 +251,53 @@ class Backend:
 
     async def __model_health_check(self) -> Dict[str, str]:
         """
-        Check the health status of the model server using the benchmark handler's health check.
+        Check the health status of the model server.
         
         Returns:
             Dict with 'status' key containing a MODELLOADEDSTATUS value and
             'reason' key containing details about the status.
         """
-        return await self.benchmark_handler.model_health_check(self.model_server_url)
+        match self.model_type:
+            case SUPPORTEDMODEL.COMFY_UI:
+                # TODO: handle comfyUI when available
+                return {
+                    'status': MODELLOADEDSTATUS.UNREADY.value, 
+                    'reason': 'ComfyUi health API not implemented yet'
+                }
+            case SUPPORTEDMODEL.TGI:
+                url = f'{self.model_server_url}/health'                
+                try:
+                    async with ClientSession() as session:
+                        async with session.get(url) as health_response:
+                            status_code = health_response.status
+                            if status_code == 200:
+                                message = await health_response.text()
+                                return {'status': MODELLOADEDSTATUS.READY.value, 'reason': message}
+                            elif status_code == 503:
+                                try:
+                                    error_response = await health_response.json()
+                                    error = error_response.get("error", "")
+                                    error_type = error_response.get("error_type", "")
+                                    reason = f'{error} {error_type}'.strip()
+                                except Exception:
+                                    reason = "Unhealthy (invalid JSON error response)"
+                                return {'status': MODELLOADEDSTATUS.FAILED.value, 'reason': reason}
+                            else:
+                                return {
+                                    'status': MODELLOADEDSTATUS.DEFERRED_TO_LOG_FILE.value,
+                                    'reason': f'Model health endpoint not ready (status: {status_code})'
+                                }
+                except Exception as e:
+                    log.debug(f"Health check exception: {str(e)}")
+                    return {
+                        'status': MODELLOADEDSTATUS.FAILED.value,
+                        'reason': f'Exception during health check: {str(e)}'
+                    }
+                
+        return {
+            'status': MODELLOADEDSTATUS.MODEL_NOT_SUPPORTED.value,
+            'reason': 'Model type not supported by pyworker yet'
+        }
 
 
     async def __read_logs(self) -> Awaitable[NoReturn]:
@@ -297,7 +347,8 @@ class Backend:
                     )
             average_throughput = sum_throughput / self.benchmark_handler.benchmark_runs
             log.debug(
-                f"benchmark result: avg {average_throughput} workload per second, max {max_throughput}"            )
+                f"benchmark result: avg {average_throughput} workload per second, max {max_throughput}"
+            )
             # save max_throughput so we don't have to run benchmark again on restart of cold instances
             with open(BENCHMARK_INDICATOR_FILE, "w") as f:
                 f.write(str(max_throughput))
@@ -307,16 +358,13 @@ class Backend:
             """
             Implement this function to handle each log line for your model.
             This function should mutate self.system_metrics and self.model_metrics
-            """
-            #TODO: When we confirm comfyUI has an health endpoint we will not need the if logic
+            """            #TODO: When we confirm comfyUI has an health endpoint we will not need the if logic
             if  self.model_type != SUPPORTEDMODEL.TGI.value:
                 await log_action_parser(log_line)
             else:
                 health_check_status_report = await self.__model_health_check()
                 reason = health_check_status_report.get('reason', None)
-                status = health_check_status_report.get('status', None)
-                
-                if status == MODELLOADEDSTATUS.READY.value:
+                if health_check_status_report.get('status', None) == MODELLOADEDSTATUS.READY:
                     log.debug(
                             f"Got log line indicating model is loaded: {reason}"
                         )
@@ -330,12 +378,13 @@ class Backend:
                         )
                     except ClientConnectorError as e:
                         log.debug(
-                            f"failed to connect to model api during benchmark"
+                            f"failed to connect to comfyui api during benchmark"
                         )
                         self.backend_errored(str(e))
-                elif status == MODELLOADEDSTATUS.FAILED.value:
-                    log.debug(f"Health check indicates error: {reason}")
-                    self.backend_errored(reason or "Health check failed")
+                elif health_check_status_report.get('status', None) == MODELLOADEDSTATUS.FAILED:
+                    log.debug(f"Got log line indicating error: {reason}")
+                    self.backend_errored(MODELLOADEDSTATUS.FAILED.value)
+                    
                 else:
                     await log_action_parser(log_line)
 

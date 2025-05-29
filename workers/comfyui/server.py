@@ -2,13 +2,13 @@ import os
 import logging
 import dataclasses
 import base64
-from typing import Union, Type, Dict
+from typing import Union, Type
 
 from aiohttp import web, ClientResponse
 from anyio import open_file
 
 from lib.backend import Backend, LogAction
-from lib.data_types import EndpointHandler, MODELLOADEDSTATUS
+from lib.data_types import EndpointHandler
 from lib.server import start_server
 from .data_types import DefaultComfyWorkflowData, CustomComfyWorkflowData
 
@@ -77,19 +77,6 @@ class DefaultComfyWorkflowHandler(EndpointHandler[DefaultComfyWorkflowData]):
     def make_benchmark_payload(self) -> DefaultComfyWorkflowData:
         return DefaultComfyWorkflowData.for_test()
 
-    def health_check(self) -> MODELLOADEDSTATUS:
-        """Simple health check that returns the status enum directly"""
-        # ComfyUI health check not fully implemented yet
-        return MODELLOADEDSTATUS.UNREADY
-
-    async def model_health_check(self, model_server_url: str) -> Dict[str, str]:
-        """ComfyUI health check implementation - currently returns unready as health API is not implemented"""
-        # TODO: Implement actual ComfyUI health check when API becomes available
-        return {
-            'status': MODELLOADEDSTATUS.UNREADY.value, 
-            'reason': 'ComfyUI health API not implemented yet'
-        }
-
     async def generate_client_response(
         self, client_request: web.Request, model_response: ClientResponse
     ) -> Union[web.Response, web.StreamResponse]:
@@ -109,19 +96,6 @@ class CustomComfyWorkflowHandler(EndpointHandler[CustomComfyWorkflowData]):
 
     def make_benchmark_payload(self) -> CustomComfyWorkflowData:
         return CustomComfyWorkflowData.for_test()
-
-    def health_check(self) -> MODELLOADEDSTATUS:
-        """Simple health check that returns the status enum directly"""
-        # ComfyUI health check not fully implemented yet
-        return MODELLOADEDSTATUS.UNREADY
-
-    async def model_health_check(self, model_server_url: str) -> Dict[str, str]:
-        """ComfyUI health check implementation - currently returns unready as health API is not implemented"""
-        # TODO: Implement actual ComfyUI health check when API becomes available
-        return {
-            'status': MODELLOADEDSTATUS.UNREADY.value, 
-            'reason': 'ComfyUI health API not implemented yet'
-        }
 
     async def generate_client_response(
         self, client_request: web.Request, model_response: ClientResponse
