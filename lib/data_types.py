@@ -18,6 +18,20 @@ be forwarded to the model
 log = logging.getLogger(__file__)
 
 
+class SUPPORTEDMODEL(Enum):
+    # We should populate this with all models to be supported in the future or better still we could read this from somewhere
+    COMFY_UI = 'comfyui'
+    TGI = 'tgi'
+
+
+class MODELLOADEDSTATUS(Enum):
+    READY = 'ready'
+    UNREADY = 'unready'
+    FAILED = 'failed'
+    DEFERRED_TO_LOG_FILE = 'deferred_to_log_file'
+    MODEL_NOT_SUPPORTED = 'model_not_supported'
+
+
 class JsonDataException(Exception):
     def __init__(self, json_msg: Dict[str, Any]):
         self.message = json_msg
@@ -119,6 +133,27 @@ class EndpointHandler(ABC, Generic[ApiPayload_T]):
     ) -> Union[web.Response, web.StreamResponse]:
         """
         defines how to convert a model API response to a response to PyWorker client
+        """
+        pass
+
+    @abstractmethod
+    async def model_health_check(self, model_server_url: str) -> Dict[str, str]:
+        """
+        Check the health status of the model server.
+        
+        Args:
+            model_server_url: The base URL of the model server
+            
+        Returns:
+            Dict with 'status' key containing a MODELLOADEDSTATUS value and
+            'reason' key containing details about the status.
+        """
+        pass
+
+    @abstractmethod
+    def health_check(self) -> MODELLOADEDSTATUS:
+        """
+        defines how to check the health of the model API
         """
         pass
 
