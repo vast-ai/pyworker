@@ -6,7 +6,6 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Union, Tuple, Optional, Set, TypeVar, Generic, Type
 from aiohttp import web, ClientResponse
 import inspect
-import typing
 
 import psutil
 
@@ -173,8 +172,7 @@ class EndpointHandler(ABC, Generic[ApiPayload_T]):
             errors["auth_data"] = e.message
         try:
             if "payload" in req_data:
-                payload_class = cls.payload_cls()
-                payload = payload_class.from_json_msg(req_data["payload"])
+                payload = cls.payload_cls().from_json_msg(req_data["payload"])
             else:
                 errors["payload"] = "field missing"
         except JsonDataException as e:
@@ -182,8 +180,7 @@ class EndpointHandler(ABC, Generic[ApiPayload_T]):
         if errors:
             raise JsonDataException(errors)
         if auth_data and payload:
-            # Cast payload to ApiPayload_T before returning
-            return (auth_data, typing.cast(ApiPayload_T, payload))
+            return (auth_data, payload)
         else:
             raise Exception("error deserializing request data")
 
