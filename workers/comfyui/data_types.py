@@ -174,10 +174,18 @@ class CustomComfyWorkflowData(ApiPayload):
 
     @classmethod
     def for_test(cls):
-        raise NotImplemented("Custom comfy workflow is not used for testing")
+        return cls(
+            custom_fields={
+                "width": 1024,
+                "height": 1024,
+                "steps": 28,
+            },
+            workflow=json.loads(get_request_template()),
+        )
 
     def count_workload(self) -> float:
-        return count_workload(
+        # Ensure that count_workload is called from the global scope
+        return globals()['count_workload'](
             width=int(self.custom_fields.get("width", 1024)),
             height=int(self.custom_fields.get("height", 1024)),
             steps=int(self.custom_fields.get("steps", 28)),
