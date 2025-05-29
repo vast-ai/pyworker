@@ -2,7 +2,7 @@ import os
 import logging
 import dataclasses
 import base64
-from typing import Union, Type
+from typing import Union, Type, Dict
 
 from aiohttp import web, ClientResponse
 from anyio import open_file
@@ -10,7 +10,7 @@ from anyio import open_file
 from lib.backend import Backend, LogAction
 from lib.data_types import EndpointHandler
 from lib.server import start_server
-from .data_types import DefaultComfyWorkflowData, CustomComfyWorkflowData
+from .data_types import DefaultComfyWorkflowData, CustomComfyWorkflowData, comfyui_health_check, MODELLOADEDSTATUS
 
 
 MODEL_SERVER_URL = "http://0.0.0.0:38188"
@@ -82,6 +82,9 @@ class DefaultComfyWorkflowHandler(EndpointHandler[DefaultComfyWorkflowData]):
     ) -> Union[web.Response, web.StreamResponse]:
         return await generate_client_response(client_request, model_response)
 
+    async def model_health_check(self, model_server_url: str) -> Dict[str, str]:
+        return await comfyui_health_check(model_server_url)
+
 
 @dataclasses.dataclass
 class CustomComfyWorkflowHandler(EndpointHandler[CustomComfyWorkflowData]):
@@ -102,11 +105,15 @@ class CustomComfyWorkflowHandler(EndpointHandler[CustomComfyWorkflowData]):
     ) -> Union[web.Response, web.StreamResponse]:
         return await generate_client_response(client_request, model_response)
 
+    async def model_health_check(self, model_server_url: str) -> Dict[str, str]:
+        return await comfyui_health_check(model_server_url)
+
 
 backend = Backend(
     model_server_url=MODEL_SERVER_URL,
     model_log_file=os.environ["MODEL_LOG"],
     allow_parallel_requests=False,
+    model_type= "comfyui",
     benchmark_handler=DefaultComfyWorkflowHandler(
         benchmark_runs=3, benchmark_words=100
     ),

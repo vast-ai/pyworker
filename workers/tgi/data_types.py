@@ -5,8 +5,9 @@ from typing import Dict, Any
 
 from transformers import AutoTokenizer
 import nltk
+from aiohttp import ClientSession
 
-from lib.data_types import ApiPayload, JsonDataException
+from lib.data_types import ApiPayload, JsonDataException, MODELLOADEDSTATUS
 
 nltk.download("words")
 WORD_LIST = nltk.corpus.words.words()
@@ -71,3 +72,35 @@ class InputData(ApiPayload):
         except JsonDataException as e:
             errors["parameters"] = e.message
             raise JsonDataException(errors)
+
+async def tgi_health_check(model_server_url: str) -> Dict[str, str]:
+    """
+    Check the health status of the TGI model server.
+    """
+    url = f'{model_server_url}/health'
+    try:
+        async with ClientSession() as session:
+            async with session.get(url) as health_response:
+                status_code = health_response.status
+                if status_code == 200:
+                    message = await health_response.text()
+                    return {'status': MODELLOADEDSTATUS.READY.value, 'reason': message}
+                elif status_code == 503:
+                    try:
+                        error_response = await health_response.json()
+                        error = error_response.get("error", "")
+                        error_type = error_response.get("error_type", "")
+                        reason = f'{error} {error_type}'.strip()
+                    except Exception:
+                        reason = "Unhealthy (invalid JSON error response)"
+                    return {'status': MODELLOADEDSTATUS.FAILED.value, 'reason': reason}
+                else:
+                    return {
+                        'status': MODELLOADEDSTATUS.DEFERRED_TO_LOG_FILE.value,
+                        'reason': f'Model health endpoint not ready (status: {status_code})'
+                    }
+    except Exception as e:
+        return {
+            'status': MODELLOADEDSTATUS.FAILED.value,
+            'reason': f'Exception during health check: {str(e)}'
+        }

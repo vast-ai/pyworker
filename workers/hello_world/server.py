@@ -18,7 +18,7 @@ from typing import Dict, Any, Union, Type
 from aiohttp import web, ClientResponse
 
 from lib.backend import Backend, LogAction
-from lib.data_types import EndpointHandler
+from lib.data_types import EndpointHandler, MODELLOADEDSTATUS # Added MODELLOADEDSTATUS
 from lib.server import start_server
 from .data_types import InputData
 
@@ -84,6 +84,20 @@ class GenerateHandler(EndpointHandler[InputData]):
                 log.debug("SENDING RESPONSE: ERROR: unknown code")
                 return web.Response(status=code)
 
+    async def model_health_check(self, model_server_url: str) -> Dict[str, str]:
+        """
+        Basic health check for the hello_world model server.
+        Assumes a /health endpoint on the model server.
+        """
+        url = f'{model_server_url}/health' # Or appropriate health endpoint
+        try:
+            # Placeholder implementation:
+            log.warning("Using placeholder health check for hello_world. Implement actual health check.")
+            return {'status': MODELLOADEDSTATUS.READY.value, 'reason': 'Placeholder: Assumed healthy'}
+        except Exception as e:
+            log.error(f"Health check for hello_world failed: {e}")
+            return {'status': MODELLOADEDSTATUS.FAILED.value, 'reason': str(e)}
+
 
 # This is the same as GenerateHandler, except that it calls a streaming endpoint of the model API and streams the
 # response, which itself is streaming, back to the client.
@@ -122,6 +136,20 @@ class GenerateStreamHandler(EndpointHandler[InputData]):
                 log.debug("SENDING RESPONSE: ERROR: unknown code")
                 return web.Response(status=code)
 
+    async def model_health_check(self, model_server_url: str) -> Dict[str, str]:
+        """
+        Basic health check for the hello_world model server (streaming variant).
+        Assumes a /health endpoint on the model server.
+        """
+        url = f'{model_server_url}/health'
+        try:
+            # Placeholder:
+            log.warning("Using placeholder health check for hello_world (stream). Implement actual health check.")
+            return {'status': MODELLOADEDSTATUS.READY.value, 'reason': 'Placeholder: Assumed healthy'}
+        except Exception as e:
+            log.error(f"Health check for hello_world (stream) failed: {e}")
+            return {'status': MODELLOADEDSTATUS.FAILED.value, 'reason': str(e)}
+
 
 # This is the backend instance of pyworker. Only one must be made which uses EndpointHandlers to process
 # incoming requests
@@ -129,6 +157,7 @@ backend = Backend(
     model_server_url=MODEL_SERVER_URL,
     model_log_file=os.environ["MODEL_LOG"],
     allow_parallel_requests=True,
+    model_type= "hello_world",  # this is a custom model type, you can use any string here
     # give the backend a handler instance that is used for benchmarking
     # number of benchmark run and number of words for a random benchmark run are given
     benchmark_handler=GenerateHandler(benchmark_runs=3, benchmark_words=256),

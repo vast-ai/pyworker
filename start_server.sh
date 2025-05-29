@@ -54,7 +54,7 @@ then
     python3 -m venv "$WORKSPACE_DIR/worker-env"
     source "$WORKSPACE_DIR/worker-env/bin/activate"
 
-    pip install -r vast-pyworker/requirements.txt
+    pip install -r "$SERVER_DIR/requirements.txt"
 
     touch ~/.no_auto_tmux
 else

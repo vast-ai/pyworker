@@ -23,12 +23,15 @@ class JsonDataException(Exception):
         self.message = json_msg
 
 
+
+ApiPayload_T = TypeVar("ApiPayload_T", bound="ApiPayload")  # Forward reference for ApiPayload itself
+
 @dataclass
 class ApiPayload(ABC):
-
+   
     @classmethod
     @abstractmethod
-    def for_test(cls) -> "ApiPayload":
+    def for_test(cls: Type[ApiPayload_T]) -> ApiPayload_T:  # Use ApiPayload_T
         """defines how create a payload for load testing"""
         pass
 
@@ -44,7 +47,7 @@ class ApiPayload(ABC):
 
     @classmethod
     @abstractmethod
-    def from_json_msg(cls, json_msg: Dict[str, Any]) -> "ApiPayload":
+    def from_json_msg(cls: Type[ApiPayload_T], json_msg: Dict[str, Any]) -> ApiPayload_T:  # Use ApiPayload_T
         """
         defines how to create an API payload from a JSON message,
         it should throw an JsonDataException if there are issues with some fields
@@ -83,7 +86,15 @@ class AuthData:
         )
 
 
-ApiPayload_T = TypeVar("ApiPayload_T", bound=ApiPayload)
+
+
+
+class MODELLOADEDSTATUS(Enum):
+    READY = 'ready'
+    UNREADY = 'unready'
+    FAILED = 'failed'
+    DEFERRED_TO_LOG_FILE = 'deferred_to_log_file'
+    MODEL_NOT_SUPPORTED = 'model_not_supported'
 
 
 @dataclass
@@ -109,6 +120,20 @@ class EndpointHandler(ABC, Generic[ApiPayload_T]):
         pass
 
     @abstractmethod
+    async def model_health_check(self, model_server_url: str) -> Dict[str, str]:
+        """
+        Check the health status of the model server.
+
+        Args:
+            model_server_url: The URL of the model server.
+
+        Returns:
+            Dict with 'status' key containing a MODELLOADEDSTATUS value (as string) and
+            'reason' key containing details about the status.
+        """
+        pass
+
+    @abstractmethod
     def make_benchmark_payload(self) -> ApiPayload_T:
         """defines how to create an ApiPayload for benchmarking."""
         pass
@@ -127,7 +152,8 @@ class EndpointHandler(ABC, Generic[ApiPayload_T]):
         cls, req_data: Dict[str, Any]
     ) -> Tuple[AuthData, ApiPayload_T]:
         errors = {}
-        auth_data = payload = None
+        auth_data: Optional[AuthData] = None
+        payload: Optional[ApiPayload_T] = None
         try:
             if "auth_data" in req_data:
                 auth_data = AuthData.from_json_msg(req_data["auth_data"])
@@ -137,7 +163,8 @@ class EndpointHandler(ABC, Generic[ApiPayload_T]):
             errors["auth_data"] = e.message
         try:
             if "payload" in req_data:
-                payload = cls.payload_cls().from_json_msg(req_data["payload"])
+                payload_cls = cls.payload_cls()
+                payload = payload_cls.from_json_msg(req_data["payload"])
             else:
                 errors["payload"] = "field missing"
         except JsonDataException as e:
@@ -147,6 +174,9 @@ class EndpointHandler(ABC, Generic[ApiPayload_T]):
         if auth_data and payload:
             return (auth_data, payload)
         else:
+            # This path should ideally not be reached if logic is correct
+            # and all required fields are present and valid.
+            log.error("Failed to deserialize request data due to missing auth_data or payload after validation.")
             raise Exception("error deserializing request data")
 
 

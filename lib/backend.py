@@ -6,24 +6,25 @@ import subprocess
 import dataclasses
 import logging
 from asyncio import wait, sleep, gather, Semaphore, FIRST_COMPLETED, create_task
-from typing import Tuple, Awaitable, NoReturn, List, Union, Callable, Optional
+from typing import Tuple, Awaitable, NoReturn, List, Union, Callable, Optional, Dict
 from functools import cached_property
 
 from anyio import open_file
-from aiohttp import web, ClientResponse, ClientSession, ClientConnectorError
+from aiohttp import web, ClientResponse, ClientSession, ClientConnectorError # type: ignore
 
 import requests
 from Crypto.Signature import pkcs1_15
 from Crypto.Hash import SHA256
 from Crypto.PublicKey import RSA
-
+from enum import Enum
 from lib.metrics import Metrics
 from lib.data_types import (
     AuthData,
     EndpointHandler,
     LogAction,
-    ApiPayload_T,
+    ApiPayload_T,  # Ensure ApiPayload_T is imported
     JsonDataException,
+    MODELLOADEDSTATUS, # Add MODELLOADEDSTATUS import
 )
 
 MSG_HISTORY_LEN = 100
@@ -33,6 +34,11 @@ log = logging.getLogger(__file__)
 LOG_POLL_INTERVAL = 0.1
 BENCHMARK_INDICATOR_FILE = ".has_benchmark"
 MAX_PUBKEY_FETCH_ATTEMPTS = 3
+
+class SUPPORTEDMODEL(Enum):
+    #We should populate this with all models to be supported in the future or better still we could read this from somewhere
+    COMFY_UI = 'comfyui'
+    TGI = 'tgi'
 
 
 @dataclasses.dataclass
@@ -46,11 +52,10 @@ class Backend:
     """
 
     model_server_url: str
+    model_type: str
     model_log_file: str
     allow_parallel_requests: bool
-    benchmark_handler: (
-        EndpointHandler  # this endpoint handler will be used for benchmarking
-    )
+    benchmark_handler: EndpointHandler  # this endpoint handler will be used for benchmarking
     log_actions: List[Tuple[LogAction, str]]
     reqnum = -1
     msg_history = []
@@ -236,6 +241,25 @@ class Backend:
             )
             return False
 
+    async def __model_health_check(self) -> Dict[str, str]:
+        """
+        Check the health status of the model server using the EndpointHandler.
+        
+        Returns:
+            Dict with 'status' key containing a MODELLOADEDSTATUS value and
+            'reason' key containing details about the status.
+        """
+        if hasattr(self.benchmark_handler, 'model_health_check') and callable(getattr(self.benchmark_handler, 'model_health_check')) :
+            return await self.benchmark_handler.model_health_check(self.model_server_url)
+        else:
+            # Fallback or error if the handler doesn't support health checks
+            # This case should ideally not be reached if handlers are correctly implemented.
+            log.error(f"Health check not implemented for handler: {type(self.benchmark_handler).__name__}")
+            return {
+                'status': MODELLOADEDSTATUS.MODEL_NOT_SUPPORTED.value,
+                'reason': f'Health check not implemented for model type handled by {type(self.benchmark_handler).__name__}'
+            }
+
     async def __read_logs(self) -> Awaitable[NoReturn]:
 
         async def run_benchmark() -> float:
@@ -295,6 +319,37 @@ class Backend:
             Implement this function to handle each log line for your model.
             This function should mutate self.system_metrics and self.model_metrics
             """
+            #TODO: When we confirm comfyUI has an health endpoint we will not need the if logic
+            if  self.model_type != SUPPORTEDMODEL.TGI.value:
+                await log_action_parser(log_line)
+            else:
+                health_check_status_report = await self.__model_health_check()
+                reason = health_check_status_report.get('reason', None)
+                if health_check_status_report.get('status', None) == MODELLOADEDSTATUS.READY:
+                    log.debug(
+                            f"Got log line indicating model is loaded: {reason}"
+                        )
+                    # some backends need a few seconds after logging successful startup before
+                    # they can begin accepting requests
+                    await sleep(5)
+                    try:
+                        max_throughput = await run_benchmark()
+                        self.metrics._model_loaded(
+                            max_throughput=max_throughput,
+                        )
+                    except ClientConnectorError as e:
+                        log.debug(
+                            f"failed to connect to comfyui api during benchmark"
+                        )
+                        self.backend_errored(str(e))
+                elif health_check_status_report.get('status', None) == MODELLOADEDSTATUS.FAILED:
+                    log.debug(f"Got log line indicating error: {reason}")
+                    self.backend_errored(MODELLOADEDSTATUS.FAILED.value)
+                    
+                else:
+                    await log_action_parser(log_line)
+
+        async def log_action_parser(log_line):
             for action, msg in self.log_actions:
                 match action:
                     case LogAction.ModelLoaded if msg in log_line:
