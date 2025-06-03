@@ -1,12 +1,20 @@
+import logging
 from urllib.parse import urljoin
 
 import requests
 
 from lib.test_utils import print_truncate_res
+from utils.endpoint_util import Endpoint
 
 """
 NOTE: this client example uses a custom comfy workflow compatible with SD3 only
 """
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s[%(levelname)-5s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger(__file__)
 
 
 def call_default_workflow(
@@ -24,6 +32,7 @@ def call_default_workflow(
         json=route_payload,
         timeout=4,
     )
+    response.raise_for_status()
     message = response.json()
     url = message["url"]
     auth_data = dict(
@@ -43,6 +52,7 @@ def call_default_workflow(
         url,
         json=req_data,
     )
+    response.raise_for_status()
     print_truncate_res(str(response.json()))
 
 
@@ -61,6 +71,7 @@ def call_custom_workflow_for_sd3(
         json=route_payload,
         timeout=4,
     )
+    response.raise_for_status()
     message = response.json()
     url = message["url"]
     auth_data = dict(
@@ -131,6 +142,7 @@ def call_custom_workflow_for_sd3(
         url,
         json=req_data,
     )
+    response.raise_for_status()
     print_truncate_res(str(response.json()))
 
 
@@ -138,13 +150,23 @@ if __name__ == "__main__":
     from lib.test_utils import test_args
 
     args = test_args.parse_args()
-    call_default_workflow(
-        api_key=args.api_key,
-        endpoint_group_name=args.endpoint_group_name,
-        server_url=args.server_url,
+    endpoint_api_key = Endpoint.get_endpoint_api_key(
+        endpoint_name=args.endpoint_group_name,
+        account_api_key=args.api_key,
     )
-    call_custom_workflow_for_sd3(
-        api_key=args.api_key,
-        endpoint_group_name=args.endpoint_group_name,
-        server_url=args.server_url,
-    )
+    if endpoint_api_key:
+        try:
+            call_default_workflow(
+                api_key=endpoint_api_key,
+                endpoint_group_name=args.endpoint_group_name,
+                server_url=args.server_url,
+            )
+            call_custom_workflow_for_sd3(
+                api_key=endpoint_api_key,
+                endpoint_group_name=args.endpoint_group_name,
+                server_url=args.server_url,
+            )
+        except Exception as e:
+            log.error(f"Error during API call: {e}")
+    else:
+        log.error(f"Failed to get API key for endpoint {args.endpoint_group_name} ")
