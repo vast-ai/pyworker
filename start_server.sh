@@ -8,7 +8,7 @@ SERVER_DIR="$WORKSPACE_DIR/vast-pyworker"
 ENV_PATH="$WORKSPACE_DIR/worker-env"
 DEBUG_LOG="$WORKSPACE_DIR/debug.log"
 PYWORKER_LOG="$WORKSPACE_DIR/pyworker.log"
-MODEL_LOG="$WORKSPACE_DIR/model.log"
+
 REPORT_ADDR="${REPORT_ADDR:-https://run.vast.ai}"
 USE_SSL="${USE_SSL:-true}"
 WORKER_PORT="${WORKER_PORT:-3000}"

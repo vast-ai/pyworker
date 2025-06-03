@@ -9,7 +9,7 @@ from enum import Enum
 from collections import Counter
 from dataclasses import dataclass, field, asdict
 from urllib.parse import urljoin
-
+from utils.endpoint_util import Endpoint
 import requests
 
 from lib.data_types import AuthData, ApiPayload
@@ -79,7 +79,7 @@ class ClientState:
 
     def make_call(self):
         self.status = ClientStatus.FetchEndpoint
-        endpoint_api_key = AuthData.get_endpoint_api_key(
+        endpoint_api_key = Endpoint.get_endpoint_api_key(
             endpoint_name=self.endpoint_group_name,
             account_api_key=self.api_key,
         )
@@ -233,7 +233,7 @@ def run_test(
     print_thread = threading.Thread(target=print_state, args=(clients, num_requests))
     print_thread.daemon = True  # makes threads get killed on program exit
     print_thread.start()
-    endpoint_api_key = AuthData.get_endpoint_api_key(
+    endpoint_api_key = Endpoint.get_endpoint_api_key(
         endpoint_name=endpoint_group_name,
         account_api_key=api_key,
     )
