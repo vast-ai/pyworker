@@ -8,6 +8,7 @@ from aiohttp import web, ClientResponse
 import inspect
 
 import psutil
+import requests
 
 
 """
@@ -22,7 +23,9 @@ class JsonDataException(Exception):
     def __init__(self, json_msg: Dict[str, Any]):
         self.message = json_msg
 
+
 ApiPayload_T = TypeVar("ApiPayload_T", bound="ApiPayload")
+
 
 @dataclass
 class ApiPayload(ABC):
@@ -45,7 +48,9 @@ class ApiPayload(ABC):
 
     @classmethod
     @abstractmethod
-    def from_json_msg(cls: Type[ApiPayload_T], json_msg: Dict[str, Any]) -> ApiPayload_T:
+    def from_json_msg(
+        cls: Type[ApiPayload_T], json_msg: Dict[str, Any]
+    ) -> ApiPayload_T:
         """
         defines how to create an API payload from a JSON message,
         it should throw an JsonDataException if there are issues with some fields
@@ -84,8 +89,6 @@ class AuthData:
         )
 
 
-
-
 @dataclass
 class EndpointHandler(ABC, Generic[ApiPayload_T]):
     """
@@ -107,7 +110,6 @@ class EndpointHandler(ABC, Generic[ApiPayload_T]):
     def healthcheck_endpoint(self) -> Optional[str]:
         """the endpoint on the model API that is used for healthchecks"""
         pass
-
 
     @classmethod
     @abstractmethod

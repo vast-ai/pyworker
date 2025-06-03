@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 import argparse
@@ -12,6 +13,13 @@ from urllib.parse import urljoin
 import requests
 
 from lib.data_types import AuthData, ApiPayload
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s[%(levelname)-5s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger(__file__)
 
 
 class ClientStatus(Enum):
@@ -71,9 +79,19 @@ class ClientState:
 
     def make_call(self):
         self.status = ClientStatus.FetchEndpoint
+        endpoint_api_key = AuthData.get_endpoint_api_key(
+            endpoint_name=self.endpoint_group_name,
+            account_api_key=self.api_key,
+        )
+        if not endpoint_api_key:
+            self.as_error.append(
+                f"Endpoint {self.endpoint_group_name} not found for API key",
+            )
+            self.status = ClientStatus.Error
+            return
         route_payload = {
             "endpoint": self.endpoint_group_name,
-            "api_key": self.api_key,
+            "api_key": endpoint_api_key,
             "cost": self.payload.count_workload(),
         }
         response = requests.post(
@@ -215,11 +233,18 @@ def run_test(
     print_thread = threading.Thread(target=print_state, args=(clients, num_requests))
     print_thread.daemon = True  # makes threads get killed on program exit
     print_thread.start()
+    endpoint_api_key = AuthData.get_endpoint_api_key(
+        endpoint_name=endpoint_group_name,
+        account_api_key=api_key,
+    )
+    if not endpoint_api_key:
+        log.debug(f"Endpoint {endpoint_group_name} not found for API key")
+        return
     try:
         for _ in range(num_requests):
             client = ClientState(
                 endpoint_group_name=endpoint_group_name,
-                api_key=api_key,
+                api_key=endpoint_api_key,
                 server_url=server_url,
                 worker_endpoint=worker_endpoint,
                 payload=payload_cls.for_test(),
