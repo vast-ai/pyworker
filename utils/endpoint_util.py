@@ -1,14 +1,15 @@
-
 import logging
 from typing import Any, Dict, Optional
 
 import requests
+
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s[%(levelname)-5s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger(__file__)
+
 
 class Endpoint:
     """
