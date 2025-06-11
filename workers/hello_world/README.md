@@ -56,7 +56,7 @@ import dataclasses
 import random
 from typing import Dict, Any
 
-from transformers import AutoTokenizer # used to count tokens in a prompt
+from transformers import OpenAIGPTTokenizer # used to count tokens in a prompt
 import nltk # used to download a list of all words to generate a random prompt and benchmark the LLM model
 
 from lib.data_types import ApiPayload
@@ -65,7 +65,7 @@ nltk.download("words")
 WORD_LIST = nltk.corpus.words.words()
 
 # you can use any tokenizer that fits your LLM. `openai-gpt` is free to use and is a good fit for most LLMs
-tokenizer = AutoTokenizer.from_pretrained("openai-community/openai-gpt")
+tokenizer = OpenAIGPTTokenizer.from_pretrained("openai-gpt")
 
 @dataclasses.dataclass
 class InputData(ApiPayload):

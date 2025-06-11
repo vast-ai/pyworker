@@ -3,7 +3,7 @@ import random
 import inspect
 from typing import Dict, Any
 
-from transformers import AutoTokenizer
+from transformers import OpenAIGPTTokenizer
 import nltk
 
 from lib.data_types import ApiPayload, JsonDataException
@@ -11,7 +11,7 @@ from lib.data_types import ApiPayload, JsonDataException
 nltk.download("words")
 WORD_LIST = nltk.corpus.words.words()
 
-tokenizer = AutoTokenizer.from_pretrained("openai-community/openai-gpt")
+tokenizer = OpenAIGPTTokenizer.from_pretrained("openai-gpt")
 
 
 @dataclasses.dataclass
