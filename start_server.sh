@@ -46,17 +46,19 @@ env | grep _ >> /etc/environment;
 
 if [ ! -d "$ENV_PATH" ]
 then
-    apt install -y python3.10-venv
     echo "setting up venv"
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    source ~/.local/bin/env
     git clone https://github.com/vast-ai/pyworker "$SERVER_DIR"
 
-    python3 -m venv "$WORKSPACE_DIR/worker-env"
+    uv venv "$WORKSPACE_DIR/worker-env" -p 3.10
     source "$WORKSPACE_DIR/worker-env/bin/activate"
 
-    pip install -r vast-pyworker/requirements.txt
+    uv pip install -r vast-pyworker/requirements.txt
 
     touch ~/.no_auto_tmux
 else
+    source ~/.local/bin/env
     source "$WORKSPACE_DIR/worker-env/bin/activate"
     echo "environment activated"
     echo "venv: $VIRTUAL_ENV"
