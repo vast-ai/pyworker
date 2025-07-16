@@ -51,7 +51,7 @@ then
     source ~/.local/bin/env
     git clone https://github.com/vast-ai/pyworker "$SERVER_DIR"
 
-    uv venv "$WORKSPACE_DIR/worker-env" -p 3.10
+    uv venv --managed-python "$WORKSPACE_DIR/worker-env" -p 3.10
     source "$WORKSPACE_DIR/worker-env/bin/activate"
 
     uv pip install -r vast-pyworker/requirements.txt
