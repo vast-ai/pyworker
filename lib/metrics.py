@@ -79,10 +79,10 @@ class Metrics:
             elapsed = time.time() - self.last_metric_update
             if self.system_metrics.model_is_loaded is False and elapsed >= 10:
                 log.debug(f"sending loading model metrics after {int(elapsed)}s wait")
-                self.__send_metrics_and_reset(elapsed)
+                self.__send_metrics_and_reset()
             elif self.update_pending or elapsed > 10:
                 log.debug(f"sending loaded model metrics after {int(elapsed)}s wait")
-                self.__send_metrics_and_reset(elapsed)
+                self.__send_metrics_and_reset()
 
     def _model_loaded(self, max_throughput: float) -> None:
         self.system_metrics.model_loading_time = (
@@ -97,13 +97,13 @@ class Metrics:
 
     #######################################Private#######################################
 
-    def __send_metrics_and_reset(self, elapsed):
+    def __send_metrics_and_reset(self):
 
         def compute_autoscaler_data() -> AutoScalaerData:
             return AutoScalaerData(
                 id=self.id,
                 loadtime=(self.system_metrics.model_loading_time or 0.0),
-                cur_load=(self.model_metrics.workload_processing / elapsed),
+                cur_load=(self.model_metrics.workload_processing),
                 max_perf=self.model_metrics.max_throughput,
                 cur_perf=self.model_metrics.cur_perf,
                 error_msg=self.model_metrics.error_msg or "",
