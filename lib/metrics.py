@@ -8,7 +8,7 @@ from functools import cache
 
 import requests
 
-from lib.data_types import AutoScalaerData, SystemMetrics, ModelMetrics, Request
+from lib.data_types import AutoScalaerData, SystemMetrics, ModelMetrics, RequestMetrics
 from typing import Awaitable, NoReturn, List
 
 METRICS_UPDATE_INTERVAL = 1
@@ -44,7 +44,7 @@ class Metrics:
         self.model_metrics.workload_pending += workload
         self.model_metrics.workload_received += workload
         self.model_metrics.requests_recieved.add(reqnum)
-        self.model_metrics.requests_working[reqnum] = Request.create(reqnum=reqnum, workload=workload)
+        self.model_metrics.requests_working[reqnum] = RequestMetrics.create(reqnum=reqnum, workload=workload)
         self.update_pending = True
 
     def _request_end(self, workload: float, reqnum: int) -> None:
