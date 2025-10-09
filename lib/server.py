@@ -24,7 +24,7 @@ def start_server(backend: Backend, routes: List[web.RouteDef], **kwargs):
         ssl_context = None
 
     async def main():
-        log.debug("starting server...")
+        log.debug("[new-pyworker] starting server...")
         app = web.Application()
         app.add_routes(routes)
         runner = web.AppRunner(app)
