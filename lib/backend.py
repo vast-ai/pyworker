@@ -158,7 +158,7 @@ class Backend:
                     )
                 )
                 res = await handler.generate_client_response(request, response)
-                self.metrics._request_success(workload=workload)
+                self.metrics._request_success(workload=workload, reqnum=auth_data.reqnum)
                 return res
             except requests.exceptions.RequestException as e:
                 log.debug(f"[backend] Request error: {e}")
