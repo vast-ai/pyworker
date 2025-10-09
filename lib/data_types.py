@@ -197,6 +197,28 @@ class SystemMetrics:
 
 
 @dataclass
+class RequestMetrics:
+    """Tracks metrics for an active request."""
+    reqnum: int
+    start_time: float
+    workload: float
+    time_taken: float
+
+    @classmethod
+    def create(cls, reqnum: int, workload: float) -> "RequestMetrics":
+        """Convenience method to instantiate a request with current timestamp."""
+        return cls(reqnum=reqnum, start_time=time.time(), workload=workload, time_taken = 0.0)
+    
+    def complete(self) -> None:
+        """Mark the request as completed, recording how long it took."""
+        self.time_taken = time.time() - self.start_time
+
+    @property
+    def request_perf(self) -> float:
+        """Workload processed per second for this request."""
+        return self.workload / self.time_taken if self.time_taken > 0 else 0.0
+
+@dataclass
 class ModelMetrics:
     """Model specific metrics"""
 
@@ -210,7 +232,8 @@ class ModelMetrics:
     error_msg: Optional[str]
     max_throughput: float
     requests_recieved: Set[int] = field(default_factory=set)
-    requests_working: Set[int] = field(default_factory=set)
+    requests_working: dict[int, RequestMetrics] = field(default_factory=dict)
+    requests_served: list[RequestMetrics] = field(default_factory=list)
     last_update: float = field(default_factory=time.time)
 
     @classmethod
@@ -227,7 +250,21 @@ class ModelMetrics:
 
     @property
     def cur_perf(self) -> float:
-        return max(self.workload_served / (time.time() - self.last_update), 0.0)
+        """
+        Calculates the average throughput (workload per second) across all completed requests
+        since the last metrics update, then clears the list.
+        """
+        if not self.requests_served:
+            return 0.0
+
+        throughputs = [r.throughput for r in self.requests_served if r.time_taken > 0]
+        if not throughputs:
+            self.requests_served.clear()
+            return 0.0
+
+        avg_perf = sum(throughputs) / len(throughputs)
+        self.requests_served.clear()
+        return avg_perf
 
     @property
     def workload_processing(self) -> float:

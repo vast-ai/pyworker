@@ -164,12 +164,6 @@ class Backend:
                 log.debug(f"[backend] Request error: {e}")
                 self.metrics._request_errored(workload=workload)
                 return web.Response(status=500)
-            finally:
-                self.metrics._request_end(
-                    workload=workload,
-                    reqnum=auth_data.reqnum,
-                )
-                self.sem.release()
 
         ###########
 
@@ -185,10 +179,20 @@ class Backend:
                 return_when=FIRST_COMPLETED,
             )
             [task.cancel() for task in pending]
-            return done.pop().result()
+            done_task = done.pop()
+            try:
+                return done_task.result()
+            except Exception as e:
+                log.debug(f"Request task raised exception: {e}")
+                return web.Response(status=500)
         except Exception as e:
             log.debug(f"Exception in main handler loop {e}")
             return web.Response(status=500)
+        finally:
+            # Always release the semaphore if it was acquired
+            if not self.allow_parallel_requests:
+                self.sem.release()
+            self.metrics._request_end(workload=workload, reqnum=auth_data.reqnum)
 
     @cached_property  
     def healthcheck_session(self):

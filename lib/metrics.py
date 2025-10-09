@@ -8,7 +8,7 @@ from functools import cache
 
 import requests
 
-from lib.data_types import AutoScalaerData, SystemMetrics, ModelMetrics
+from lib.data_types import AutoScalaerData, SystemMetrics, ModelMetrics, Request
 from typing import Awaitable, NoReturn, List
 
 METRICS_UPDATE_INTERVAL = 1
@@ -44,7 +44,7 @@ class Metrics:
         self.model_metrics.workload_pending += workload
         self.model_metrics.workload_received += workload
         self.model_metrics.requests_recieved.add(reqnum)
-        self.model_metrics.requests_working.add(reqnum)
+        self.model_metrics.requests_working[reqnum] = Request.create(reqnum=reqnum, workload=workload)
         self.update_pending = True
 
     def _request_end(self, workload: float, reqnum: int) -> None:
@@ -52,13 +52,16 @@ class Metrics:
         this function is called after handling of a request ends, regardless of the outcome
         """
         self.model_metrics.workload_pending -= workload
-        self.model_metrics.requests_working.discard(reqnum)
+        self.model_metrics.requests_working.pop(reqnum, None)
 
-    def _request_success(self, workload: float) -> None:
+    def _request_success(self, workload: float, reqnum: int) -> None:
         """
         this function is called after a response from model API is received and forwarded.
         """
         self.model_metrics.workload_served += workload
+        request = self.model_metrics.requests_working.get(reqnum)
+        request.complete()
+        self.model_metrics.requests_served.append(request)
         self.update_pending = True
 
     def _request_errored(self, workload: float) -> None:
@@ -66,6 +69,7 @@ class Metrics:
         this function is called if model API returns an error
         """
         self.model_metrics.workload_errored += workload
+        self.update_pending = True
 
     def _request_canceled(self, workload: float) -> None:
         """
