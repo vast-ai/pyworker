@@ -61,6 +61,7 @@ class Metrics:
         self.model_metrics.workload_served += workload
         request = self.model_metrics.requests_working.get(reqnum)
         request.complete()
+        log.debug(f"REQUEST SUCCEEDED: Time difference is {time.time() - request.time_taken}, measured as {request.time_taken}")
         self.model_metrics.requests_served.append(request)
         self.update_pending = True
 
