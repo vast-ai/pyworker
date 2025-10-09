@@ -257,14 +257,14 @@ class ModelMetrics:
         if not self.requests_served:
             return 0.0
 
-        throughputs = [r.throughput for r in self.requests_served if r.time_taken > 0]
-        if not throughputs:
+        request_perfs = [r.request_perf for r in self.requests_served if r.time_taken > 0]
+        if not request_perfs:
             self.requests_served.clear()
             return 0.0
 
-        avg_perf = sum(throughputs) / len(throughputs)
+        avg_req_perf = sum(request_perfs) / len(request_perfs)
         self.requests_served.clear()
-        return avg_perf
+        return avg_req_perf
 
     @property
     def workload_processing(self) -> float:
