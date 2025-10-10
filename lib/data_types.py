@@ -200,9 +200,9 @@ class SystemMetrics:
 class RequestMetrics:
     """Tracks metrics for an active request."""
     reqnum: int
+    workload: float
     start_time: float = 0.0
     end_time: float = 0.0
-    workload: float
 
     def start(self) -> None:
         """Mark the request as started"""
