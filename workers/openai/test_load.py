@@ -1,5 +1,9 @@
-from lib.test_utils import test_load_cmd, test_args
+from lib.test_utils import test_args
+from utils.endpoint_util import Endpoint
+from utils.ssl import get_cert_file_path
+from lib.data_types import AuthData
 from .data_types.server import CompletionsData
+
 import os
 import time
 import threading
@@ -353,13 +357,32 @@ if __name__ == "__main__":
         help="Model to use for completions request (required if MODEL_NAME env var not set)",
     )
 
-    # Parse known args to get model early, before test_load_cmd adds its args
+    # Parse known args to get model early, before adding load args
     known_args, _ = test_args.parse_known_args()
-
-    # Set environment variable if model was provided
     if hasattr(known_args, "model") and known_args.model:
         os.environ["MODEL_NAME"] = known_args.model
         print(f"Set MODEL_NAME environment variable to: {known_args.model}")
 
-    # Now call test_load_cmd normally - it will add its own args and re-parse
-    test_load_cmd(CompletionsData, WORKER_ENDPOINT, arg_parser=test_args)
+    # Load test args
+    test_args.add_argument("-n", dest="num_requests", type=int, required=True, help="total number of requests")
+    test_args.add_argument("-rps", dest="requests_per_second", type=float, required=True, help="requests per second")
+    test_args.add_argument("--out", dest="out_path", type=str, default="load_test_report.png", help="path to save the report image")
+    args = test_args.parse_args()
+
+    server_url = {
+        "prod": "https://run.vast.ai",
+        "alpha": "https://run-alpha.vast.ai",
+        "candidate": "https://run-candidate.vast.ai",
+        "local": "http://localhost:8080"
+    }.get(args.instance, "http://localhost:8080")
+
+    run_load_with_metrics(
+        num_requests=args.num_requests,
+        requests_per_second=args.requests_per_second,
+        endpoint_group_name=args.endpoint_group_name,
+        account_api_key=args.api_key,
+        server_url=server_url,
+        worker_endpoint=WORKER_ENDPOINT,
+        instance=args.instance,
+        out_path=args.out_path,
+    )

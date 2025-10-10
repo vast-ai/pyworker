@@ -1,5 +1,6 @@
 import logging
-from typing import Any, Dict, Optional
+import time
+from typing import Any, Dict, Optional, Tuple
 
 import requests
 
@@ -17,13 +18,48 @@ class Endpoint:
     """
 
     @staticmethod
+    def get_endpoint_info(
+        endpoint_name: str, account_api_key: str, instance: str
+    ) -> Optional[Dict[str, Any]]:
+        headers = {"Authorization": f"Bearer {account_api_key}"}
+        url = f"{Endpoint.get_server_url(instance)}?autoscaler_instance={instance}"
+        # Retry a few times to smooth over transient propagation/network delays
+        for attempt in range(4):
+            try:
+                response = requests.get(url, headers=headers, timeout=8)
+                if response.status_code != 200:
+                    # brief backoff and retry
+                    time.sleep(0.3 * (attempt + 1))
+                    continue
+                try:
+                    data = response.json()
+                except Exception:
+                    # JSON parse failed; backoff and retry
+                    time.sleep(0.3 * (attempt + 1))
+                    continue
+                result = data.get("results", []) if isinstance(data, dict) else []
+                endpoint = next(
+                    (item for item in result if item.get("endpoint_name") == endpoint_name),
+                    None,
+                )
+                if endpoint and endpoint.get("id") and endpoint.get("api_key"):
+                    return {"id": endpoint.get("id"), "api_key": endpoint.get("api_key")}
+            except Exception:
+                # network or other transient error; retry
+                time.sleep(0.3 * (attempt + 1))
+        return None
+
+    @staticmethod
     def get_autoscaler_server_url(instance: str) -> str:
         endpoints = {
             "alpha": "run-alpha",
             "candidate": "run-candidate",
             "prod": "run",
         }
-        return f"https://{endpoints[instance]}.vast.ai/"
+        host = endpoints.get(instance)
+        if host:
+            return f"https://{host}.vast.ai/"
+        return "http://localhost:8080"
 
     @staticmethod
     def get_server_url(instance: str) -> str:
@@ -32,7 +68,8 @@ class Endpoint:
             "candidate": "candidate",
             "prod": "console",
         }
-        return f"https://{endpoints[instance]}.vast.ai/api/v0/endptjobs/"
+        host = endpoints.get(instance, "alpha")
+        return f"https://{host}.vast.ai/api/v0/endptjobs/"
 
     @staticmethod
     def get_endpoint_api_key(
@@ -55,6 +92,7 @@ class Endpoint:
             response = requests.get(
                 f"{Endpoint.get_server_url(instance)}?autoscaler_instance={instance}",
                 headers=headers,
+                timeout=8,
             )
 
             if response.status_code != 200:
@@ -64,14 +102,14 @@ class Endpoint:
 
             try:
                 data = response.json()
-            except requests.exceptions.JSONDecodeError as e:
+            except Exception as e:
                 log.debug(f"Failed to parse JSON response: {e}")
                 return None
 
             result = data.get("results", [])
 
             endpoint: Optional[Dict[str, Any]] = next(
-                (item for item in result if item["endpoint_name"] == endpoint_name),
+                (item for item in result if item.get("endpoint_name") == endpoint_name),
                 None,
             )
             if not endpoint:
