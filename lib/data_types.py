@@ -262,15 +262,12 @@ class ModelMetrics:
         if not self.requests_served:
             return 0.0
         
-        print(f"CALC CUR PERF: len requests served: {len(self.requests_served)}")
-
-        request_perfs = [r.request_perf for r in self.requests_served if r.time_taken > 0]
+        request_perfs = [r.request_perf for r in self.requests_served if r.request_duration > 0]
         if not request_perfs:
             self.requests_served.clear()
             return 0.0
 
         avg_req_perf = sum(request_perfs) / len(request_perfs)
-        print(f"CALC CUR PERF: calculated avg_req_perf {avg_req_perf}")
         return avg_req_perf
 
     @property
