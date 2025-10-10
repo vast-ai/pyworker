@@ -50,11 +50,11 @@ class Backend:
     model_server_url: str
     model_log_file: str
     allow_parallel_requests: bool
-    max_wait_time: float = 10.0
     benchmark_handler: (
         EndpointHandler  # this endpoint handler will be used for benchmarking
     )
     log_actions: List[Tuple[LogAction, str]]
+    max_wait_time: float = 10.0
     reqnum = -1
     msg_history = []
     sem: Semaphore = dataclasses.field(default_factory=Semaphore)
