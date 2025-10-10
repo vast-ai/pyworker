@@ -200,23 +200,28 @@ class SystemMetrics:
 class RequestMetrics:
     """Tracks metrics for an active request."""
     reqnum: int
-    start_time: float
+    start_time: float = 0.0
+    end_time: float = 0.0
     workload: float
-    time_taken: float
 
-    @classmethod
-    def create(cls, reqnum: int, workload: float) -> "RequestMetrics":
-        """Convenience method to instantiate a request with current timestamp."""
-        return cls(reqnum=reqnum, start_time=time.time(), workload=workload, time_taken = 0.0)
+    def start(self) -> None:
+        """Mark the request as started"""
+        self.start_time = time.time()
     
     def complete(self) -> None:
-        """Mark the request as completed, recording how long it took."""
-        self.time_taken = time.time() - self.start_time
+        """Mark the request as completed"""
+        self.end_time = time.time()
+
+    @property
+    def request_duration(self) -> float:
+        if self.start_time != 0 and self.end_time != 0:
+            return self.end_time - self.start_time
+        return 0.0
 
     @property
     def request_perf(self) -> float:
         """Workload processed per second for this request."""
-        return self.workload / self.time_taken if self.time_taken > 0 else 0.0
+        return self.workload / self.request_duration if self.request_duration > 0 else 0.0
 
 @dataclass
 class ModelMetrics:
@@ -271,6 +276,10 @@ class ModelMetrics:
     @property
     def workload_processing(self) -> float:
         return max(self.workload_received - self.workload_cancelled, 0.0)
+
+    @property
+    def wait_time(self) -> float:
+        return sum([request.workload for request in self.requests_working]) / self.max_throughput
 
     def set_errored(self, error_msg):
         self.reset()

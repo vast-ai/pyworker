@@ -27,6 +27,7 @@ def get_url() -> str:
 @dataclass
 class Metrics:
     last_metric_update: float = 0.0
+    last_request_served: float = 0.0
     update_pending: bool = False
     id: int = field(default_factory=lambda: int(os.environ["CONTAINER_ID"]))
     report_addr: List[str] = field(
@@ -44,7 +45,9 @@ class Metrics:
         self.model_metrics.workload_pending += workload
         self.model_metrics.workload_received += workload
         self.model_metrics.requests_recieved.add(reqnum)
-        self.model_metrics.requests_working[reqnum] = RequestMetrics.create(reqnum=reqnum, workload=workload)
+        request = RequestMetrics(reqnum=reqnum, workload=workload)
+        request.start()
+        self.model_metrics.requests_working[reqnum] = request
         self.update_pending = True
 
     def _request_end(self, workload: float, reqnum: int) -> None:
@@ -53,6 +56,7 @@ class Metrics:
         """
         self.model_metrics.workload_pending -= workload
         self.model_metrics.requests_working.pop(reqnum, None)
+        self.last_request_served = time.time()
 
     def _request_success(self, workload: float, reqnum: int) -> None:
         """
@@ -60,8 +64,10 @@ class Metrics:
         """
         self.model_metrics.workload_served += workload
         request = self.model_metrics.requests_working.get(reqnum)
+        # We started this request before a pending request was served, so the task really started then
+        if request.start_time < self.last_request_served:
+            request.start_time = self.last_request_served
         request.complete()
-        log.debug(f"REQUEST SUCCEEDED: Time difference is {time.time() - request.time_taken}, measured as {request.time_taken}")
         self.model_metrics.requests_served.append(request)
         self.update_pending = True
 

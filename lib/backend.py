@@ -25,6 +25,7 @@ from lib.data_types import (
     LogAction,
     ApiPayload_T,
     JsonDataException,
+    RequestMetrics
 )
 
 MSG_HISTORY_LEN = 100
@@ -49,6 +50,7 @@ class Backend:
     model_server_url: str
     model_log_file: str
     allow_parallel_requests: bool
+    max_wait_time: float = 10.0
     benchmark_handler: (
         EndpointHandler  # this endpoint handler will be used for benchmarking
     )
@@ -119,6 +121,8 @@ class Backend:
         handler: EndpointHandler[ApiPayload_T],
         request: web.Request,
     ) -> Union[web.Response, web.StreamResponse]:
+        if self.metrics.model_metrics.wait_time > self.max_wait_time:
+            return web.Repsonse(status=429)
         """use this function to forward requests to the model endpoint"""
         try:
             data = await request.json()
