@@ -119,14 +119,29 @@ class GenericHandler(EndpointHandler[GenericData], ABC):
 class CompletionsData(GenericData):
     @classmethod
     def for_test(cls) -> "CompletionsData":
-        prompt = " ".join(random.choices(WORD_LIST, k=int(250)))
+        system_prompt = """You are a helpful AI assistant. You have access to the following knowledge base:
+    
+        Zebras (US: /ˈziːbrəz/, UK: /ˈzɛbrəz, ˈziː-/)[2] (subgenus Hippotigris) are African equines 
+        with distinctive black-and-white striped coats. There are three living species: Grévy's zebra 
+        (Equus grevyi), the plains zebra (E. quagga), and the mountain zebra (E. zebra). Zebras share the 
+        genus Equus with horses and asses, the three groups being the only living members of the family 
+        Equidae. Zebra stripes come in different patterns, unique to each individual. Several theories 
+        have been proposed for the function of these patterns, with most evidence supporting them as a 
+        deterrent for biting flies. Zebras inhabit eastern and southern Africa and can be found in a 
+        variety of habitats such as savannahs, grasslands, woodlands, shrublands, and mountainous areas.
+        
+        Please answer the following question based on the above context."""
+        unique_question = " ".join(random.choices(WORD_LIST, k=int(50)))
         model = os.environ.get("MODEL_NAME")
         if not model:
             raise ValueError("MODEL_NAME environment variable not set")
 
         test_input = {
             "model": model,
-            "prompt": prompt,
+            "messages": [
+                {"role": "system", "content": system_prompt},  # Shared prefix
+                {"role": "user", "content": unique_question}   # Unique per request
+            ],
             "temperature": 0.7,
             "max_tokens": 500,
         }
