@@ -210,6 +210,7 @@ class RequestMetrics:
 class BenchmarkResult:
     request_idx: int
     workload: float
+    task: Awaitable[ClientResponse]
     response: Optional[ClientResponse] = None
 
     @property
