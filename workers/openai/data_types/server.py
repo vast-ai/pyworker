@@ -131,7 +131,7 @@ class CompletionsData(GenericData):
         variety of habitats such as savannahs, grasslands, woodlands, shrublands, and mountainous areas.
         
         Please answer the following question based on the above context."""
-        unique_question = " ".join(random.choices(WORD_LIST, k=int(50)))
+        unique_question = " ".join(random.choices(WORD_LIST, k=int(20)))
         model = os.environ.get("MODEL_NAME")
         if not model:
             raise ValueError("MODEL_NAME environment variable not set")
@@ -177,7 +177,7 @@ class ChatCompletionsData(GenericData):
         variety of habitats such as savannahs, grasslands, woodlands, shrublands, and mountainous areas.
         
         Please answer the following question based on the above context."""
-        unique_question = " ".join(random.choices(WORD_LIST, k=int(50)))
+        unique_question = " ".join(random.choices(WORD_LIST, k=int(20)))
         model = os.environ.get("MODEL_NAME")
         if not model:
             raise ValueError("MODEL_NAME environment variable not set")
@@ -185,7 +185,10 @@ class ChatCompletionsData(GenericData):
         # Chat completions use messages format instead of prompt
         test_input = {
             "model": model,
-            "prompt": f"{system_prompt}\n\n{unique_question}",
+            "messages": [
+                {"role": "system", "content": system_prompt},  # Shared prefix
+                {"role": "user", "content": unique_question}   # Unique per request
+            ],
             "temperature": 0.7,
             "max_tokens": 500,
         }
