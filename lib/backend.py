@@ -334,6 +334,7 @@ class Backend:
             for run in range(1, self.benchmark_handler.benchmark_runs + 1):
                 start = time.time()
                 benchmark_requests = []
+                tasks = []
 
                 for i in range(concurrent_requests):
                     payload = self.benchmark_handler.make_benchmark_payload()
@@ -341,9 +342,9 @@ class Backend:
                     benchmark_requests.append(
                         BenchmarkResult(request_idx=i, workload=workload)
                     )
-
-                # Execute requests
-                tasks = [self.__call_api(handler=self.benchmark_handler, payload=self.benchmark_handler.make_benchmark_payload) for _ in range(concurrent_requests)]
+                    tasks.append(
+                        self.__call_api(handler=self.benchmark_handler, payload=payload)
+                    )
 
                 responses = await gather(*tasks)
 
