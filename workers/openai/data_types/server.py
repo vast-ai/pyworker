@@ -125,13 +125,12 @@ class CompletionsData(GenericData):
         with distinctive black-and-white striped coats. There are three living species: Grévy's zebra 
         (Equus grevyi), the plains zebra (E. quagga), and the mountain zebra (E. zebra). Zebras share the 
         genus Equus with horses and asses, the three groups being the only living members of the family 
-        Equidae. Zebra stripes come in different patterns, unique to each individual. Several theories 
-        have been proposed for the function of these patterns, with most evidence supporting them as a 
-        deterrent for biting flies. Zebras inhabit eastern and southern Africa and can be found in a 
-        variety of habitats such as savannahs, grasslands, woodlands, shrublands, and mountainous areas.
+        Equidae. Zebra stripes come in different patterns, unique to each individual. Zebras inhabit eastern 
+        and southern Africa and can be found in a variety of habitats such as savannahs, grasslands, 
+        woodlands, shrublands, and mountainous areas.
         
         Please answer the following question based on the above context."""
-        unique_question = " ".join(random.choices(WORD_LIST, k=int(20)))
+        unique_question = " ".join(random.choices(WORD_LIST, k=int(100)))
         model = os.environ.get("MODEL_NAME")
         if not model:
             raise ValueError("MODEL_NAME environment variable not set")
@@ -171,13 +170,12 @@ class ChatCompletionsData(GenericData):
         with distinctive black-and-white striped coats. There are three living species: Grévy's zebra 
         (Equus grevyi), the plains zebra (E. quagga), and the mountain zebra (E. zebra). Zebras share the 
         genus Equus with horses and asses, the three groups being the only living members of the family 
-        Equidae. Zebra stripes come in different patterns, unique to each individual. Several theories 
-        have been proposed for the function of these patterns, with most evidence supporting them as a 
-        deterrent for biting flies. Zebras inhabit eastern and southern Africa and can be found in a 
-        variety of habitats such as savannahs, grasslands, woodlands, shrublands, and mountainous areas.
+        Equidae. Zebra stripes come in different patterns, unique to each individual. Zebras inhabit eastern 
+        and southern Africa and can be found in a variety of habitats such as savannahs, grasslands, 
+        woodlands, shrublands, and mountainous areas.
         
         Please answer the following question based on the above context."""
-        unique_question = " ".join(random.choices(WORD_LIST, k=int(20)))
+        unique_question = " ".join(random.choices(WORD_LIST, k=int(100)))
         model = os.environ.get("MODEL_NAME")
         if not model:
             raise ValueError("MODEL_NAME environment variable not set")
