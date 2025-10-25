@@ -206,6 +206,16 @@ class RequestMetrics:
     status: str
     success: bool = False
 
+@dataclasses.dataclass
+class BenchmarkResult:
+    request_idx: int
+    workload: float
+    response: Optional[ClientResponse] = None
+
+    @property
+    def is_successful(self) -> bool:
+        return self.response is not None and self.response.status == 200
+
 @dataclass
 class ModelMetrics:
     """Model specific metrics"""

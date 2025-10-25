@@ -26,7 +26,8 @@ from lib.data_types import (
     LogAction,
     ApiPayload_T,
     JsonDataException,
-    RequestMetrics
+    RequestMetrics,
+    BenchmarkResult
 )
 
 VERSION = "0.1.0"
@@ -332,18 +333,26 @@ class Backend:
 
             for run in range(1, self.benchmark_handler.benchmark_runs + 1):
                 start = time.time()
-                tasks = []
-                total_workload = 0
+                benchmark_requests = []
 
-                for _ in range(concurrent_requests):
+                for i in range(concurrent_requests):
                     payload = self.benchmark_handler.make_benchmark_payload()
-                    total_workload += payload.count_workload()
-                    tasks.append(
-                        self.__call_api(handler=self.benchmark_handler, payload=payload)
+                    workload = payload.count_workload()
+                    benchmark_requests.append(
+                        BenchmarkResult(request_idx=i, workload=workload)
                     )
 
+                # Execute requests
+                tasks = [self.__call_api(handler=self.benchmark_handler, payload=self.benchmark_handler.make_benchmark_payload) for _ in range(concurrent_requests)]
+
                 responses = await gather(*tasks)
+
+                for bench_req, response in zip(benchmark_requests, responses):
+                    bench_req.response = response
+
+                total_workload = sum(bench_req.workload for bench_req in benchmark_requests if bench_req.is_successful)
                 time_elapsed = time.time() - start
+                successful_responses = sum([1 for br in benchmark_requests if br.is_successful])
 
                 throughput = total_workload / time_elapsed
                 sum_throughput += throughput
@@ -357,7 +366,7 @@ class Backend:
                             f"Run: {run}, concurrent_requests: {concurrent_requests}",
                             f"Total workload: {total_workload}, time_elapsed: {time_elapsed}s",
                             f"Throughput: {throughput} workload/s",
-                            f"Successful responses: {len([r for r in responses if r.status == 200])}",
+                            f"Successful responses: {successful_responses}/{concurrent_requests}",
                             "#" * 60,
                         ]
                     )
