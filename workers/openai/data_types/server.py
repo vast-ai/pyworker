@@ -138,10 +138,7 @@ class CompletionsData(GenericData):
 
         test_input = {
             "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},  # Shared prefix
-                {"role": "user", "content": unique_question}   # Unique per request
-            ],
+            "prompt": f"{system_prompt}\n\n{unique_question}",
             "temperature": 0.7,
             "max_tokens": 500,
         }
@@ -188,10 +185,7 @@ class ChatCompletionsData(GenericData):
         # Chat completions use messages format instead of prompt
         test_input = {
             "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},  # Shared prefix
-                {"role": "user", "content": unique_question}   # Unique per request
-            ],
+            "prompt": f"{system_prompt}\n\n{unique_question}",
             "temperature": 0.7,
             "max_tokens": 500,
         }
