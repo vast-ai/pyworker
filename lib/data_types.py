@@ -206,7 +206,7 @@ class RequestMetrics:
     status: str
     success: bool = False
 
-@dataclasses.dataclass
+@dataclass
 class BenchmarkResult:
     request_idx: int
     workload: float
