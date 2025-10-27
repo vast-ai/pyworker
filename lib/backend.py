@@ -107,7 +107,7 @@ class Backend:
                 break
             except ValueError as e:
                 log.debug(f"Error downloading key: {e}")
-                time.sleep(15)
+                await sleep(15)
         if key is None:
             self._total_pubkey_fetch_errors += 1
             if self._total_pubkey_fetch_errors >= MAX_PUBKEY_FETCH_ATTEMPTS:
@@ -138,9 +138,12 @@ class Backend:
         async def make_request() -> Union[web.Response, web.StreamResponse]:
             log.debug(f"got request, {auth_data.reqnum}")
             self.metrics._request_start(workload=workload, reqnum=auth_data.reqnum)
+
+            acquired = False
             if self.allow_parallel_requests is False:
                 log.debug(f"Waiting to aquire Sem for reqnum:{auth_data.reqnum}")
                 await self.sem.acquire()
+                acquired = True
                 log.debug(
                     f"Sem acquired for reqnum:{auth_data.reqnum}, starting request..."
                 )
@@ -160,7 +163,7 @@ class Backend:
                 res = await handler.generate_client_response(request, response)
                 self.metrics._request_success(workload=workload)
                 return res
-            except requests.exceptions.RequestException as e:
+            except aiohttp.ClientError as e:
                 log.debug(f"[backend] Request error: {e}")
                 self.metrics._request_errored(workload=workload)
                 return web.Response(status=500)
@@ -169,7 +172,8 @@ class Backend:
                     workload=workload,
                     reqnum=auth_data.reqnum,
                 )
-                self.sem.release()
+                if acquired:
+                    self.sem.release()
 
         ###########
 
@@ -387,7 +391,7 @@ class Backend:
                     if line:
                         await handle_log_line(line.rstrip())
                     else:
-                        time.sleep(LOG_POLL_INTERVAL)
+                        await sleep(LOG_POLL_INTERVAL)
 
         ###########
 
