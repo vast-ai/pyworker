@@ -19,6 +19,7 @@ MODEL_SERVER_START_LOG_MSG = "To see the GUI go to: "
 MODEL_SERVER_ERROR_LOG_MSGS = [
     "MetadataIncompleteBuffer",  # This error is emitted when the downloaded model is corrupted
     "Value not in list: ",  # This error is emitted when the model file is not there at all
+    "[ERROR] Provisioning Script failed", # Error inserted by provisioning script if models/nodes fail to download
 ]
 
 
@@ -70,7 +71,7 @@ class ComfyWorkflowHandler(EndpointHandler[ComfyWorkflowData]):
 
     @property
     def healthcheck_endpoint(self) -> Optional[str]:
-        return None
+        return f"{MODEL_SERVER_URL}/health"
 
     @classmethod
     def payload_cls(cls) -> Type[ComfyWorkflowData]:

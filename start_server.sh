@@ -9,7 +9,7 @@ ENV_PATH="$WORKSPACE_DIR/worker-env"
 DEBUG_LOG="$WORKSPACE_DIR/debug.log"
 PYWORKER_LOG="$WORKSPACE_DIR/pyworker.log"
 
-REPORT_ADDR="${REPORT_ADDR:-https://cloud.vast.ai/api/v0,https://run.vast.ai}"
+REPORT_ADDR="${REPORT_ADDR:-https://run.vast.ai}"
 USE_SSL="${USE_SSL:-true}"
 WORKER_PORT="${WORKER_PORT:-3000}"
 mkdir -p "$WORKSPACE_DIR"
@@ -59,12 +59,12 @@ then
     fi
 
     # Fork testing
-    git clone "${PYWORKER_REPO:-https://github.com/vast-ai/pyworker}" "$SERVER_DIR"
+    [[ ! -d $SERVER_DIR ]] && git clone "${PYWORKER_REPO:-https://github.com/vast-ai/pyworker}" "$SERVER_DIR"
     if [[ -n ${PYWORKER_REF:-} ]]; then
         (cd "$SERVER_DIR" && git checkout "$PYWORKER_REF")
     fi
 
-    uv venv --managed-python "$ENV_PATH" -p 3.10
+    uv venv --python-preference only-managed "$ENV_PATH" -p 3.10
     source "$ENV_PATH/bin/activate"
 
     uv pip install -r "${SERVER_DIR}/requirements.txt"

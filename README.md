@@ -45,6 +45,7 @@ If you are using a Vast.ai template that includes PyWorker integration (marked a
 Currently available workers:
 *   `hello_world`: A simple example worker for a basic LLM server.
 *   `comfyui`: A worker for the ComfyUI image generation backend.
+*   `openai`: A worker for OpenAI-compatible inference servers (vLLM, Ollama, TGI, llama.cpp).
 *   `tgi`: A worker for the Text Generation Inference backend.
 
 ### Implementing a New Worker

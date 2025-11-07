@@ -5,16 +5,18 @@ import dataclasses
 from typing import Dict, Any
 from functools import cache
 from math import ceil
+from pathlib import Path
+import json
+import logging
 
 from lib.data_types import ApiPayload, JsonDataException
 
-
-with open("workers/comfyui/misc/test_prompts.txt", "r") as f:
-    test_prompts = f.readlines()
+log = logging.getLogger(__file__)
 
 def count_workload() -> float:
-    # Always 1.0 where there is a single instance of ComfyUI handling requests
-    return 1.0
+    # Always 100.0 where there is a single instance of ComfyUI handling requests
+    # Results will indicate % or a job completed per second.  Avoids sub 0.1 sec performance indication
+    return 100.0
 
 @dataclasses.dataclass
 class ComfyWorkflowData(ApiPayload):
@@ -23,9 +25,32 @@ class ComfyWorkflowData(ApiPayload):
     @classmethod
     def for_test(cls):
         """
-        Use the variables available to simulate workflows of the required running time
+        If the user has provided a benchmark workflow we can use it here to properly gauge performance.
+        Otherwise, use the variables available to simulate workflows of the required running time
         Example: SD1.5, simple image gen 10000 steps, 512px x 512px will run for approximately 9 minutes @ ~18 it/s (RTX 4090)
         """
+        # Try to load benchmark.json
+        benchmark_file = Path("workers/comfyui-json/misc/benchmark.json")
+        
+        if benchmark_file.exists():
+            try:
+                with open(benchmark_file, "r") as f:
+                    benchmark_workflow = json.load(f)
+                return cls(
+                    input={
+                        "request_id": f"test-{random.randint(1000, 99999)}",
+                        "workflow_json": benchmark_workflow
+                    }
+                )
+            except (json.JSONDecodeError, IOError):
+                # JSON is malformed or file can't be read, fall through to default
+                log.error(f"Failed to benchmark using {benchmark_file}")
+        
+        # Fallback: read prompts and construct payload
+        log.info("Using fallback method for benchmarking")
+        with open("workers/comfyui-json/misc/test_prompts.txt", "r") as f:
+            test_prompts = f.readlines()
+        
         test_prompt = random.choice(test_prompts).rstrip()
         return cls(
             input={

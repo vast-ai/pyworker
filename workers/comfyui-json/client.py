@@ -98,6 +98,7 @@ def call_text2image_workflow(
         endpoint=route_response["endpoint"],
         reqnum=route_response["reqnum"],
         url=route_response["url"],
+        request_idx=route_response["request_idx"],
     )
     
     # Build the payload for the worker request

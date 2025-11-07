@@ -3,7 +3,7 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Union, Tuple, Optional, Set, TypeVar, Generic, Type
+from typing import Dict, Any, Union, Tuple, Optional, Set, TypeVar, Generic, Type, Awaitable
 from aiohttp import web, ClientResponse
 import inspect
 
@@ -65,10 +65,11 @@ class ApiPayload(ABC):
 class AuthData:
     """data used to authenticate requester"""
 
-    signature: str
     cost: str
     endpoint: str
     reqnum: int
+    request_idx: int
+    signature: str
     url: str
 
     @classmethod
@@ -189,12 +190,33 @@ class SystemMetrics:
         self.additional_disk_usage = disk_usage - self.last_disk_usage
         self.last_disk_usage = disk_usage
 
-    def reset(self):
+    def reset(self, expected: float | None) -> None:
         # autoscaler excepts model_loading_time to be populated only once, when the instance has
         # finished benchmarking and is ready to receive requests. This applies to restarted instances
         # as well: they should send model_loading_time once when they are done loading
-        self.model_loading_time = None
+        if self.model_loading_time == expected:
+            self.model_loading_time = None
 
+
+@dataclass
+class RequestMetrics:
+    """Tracks metrics for an active request."""
+    request_idx: int
+    reqnum: int
+    workload: float
+    status: str
+    success: bool = False
+
+@dataclass
+class BenchmarkResult:
+    request_idx: int
+    workload: float
+    task: Awaitable[ClientResponse]
+    response: Optional[ClientResponse] = None
+
+    @property
+    def is_successful(self) -> bool:
+        return self.response is not None and self.response.status == 200
 
 @dataclass
 class ModelMetrics:
@@ -205,12 +227,14 @@ class ModelMetrics:
     workload_received: float
     workload_cancelled: float
     workload_errored: float
+    workload_rejected: float
     # these are not
     workload_pending: float
     error_msg: Optional[str]
     max_throughput: float
     requests_recieved: Set[int] = field(default_factory=set)
-    requests_working: Set[int] = field(default_factory=set)
+    requests_working: dict[int, RequestMetrics] = field(default_factory=dict)
+    requests_deleting: list[RequestMetrics] = field(default_factory=list)
     last_update: float = field(default_factory=time.time)
 
     @classmethod
@@ -220,18 +244,29 @@ class ModelMetrics:
             workload_served=0.0,
             workload_cancelled=0.0,
             workload_errored=0.0,
+            workload_rejected=0.0,
             workload_received=0.0,
             error_msg=None,
             max_throughput=0.0,
         )
-
-    @property
-    def cur_perf(self) -> float:
-        return max(self.workload_served / (time.time() - self.last_update), 0.0)
-
+    
     @property
     def workload_processing(self) -> float:
         return max(self.workload_received - self.workload_cancelled, 0.0)
+
+    @property
+    def wait_time(self) -> float:
+        if (len(self.requests_working) == 0):
+            return 0.0
+        return sum([request.workload for request in self.requests_working.values()]) / max(self.max_throughput, 0.00001)
+    
+    @property
+    def cur_load(self) -> float:
+        return sum([request.workload for request in self.requests_working.values()])
+
+    @property
+    def working_request_idxs(self) -> list[int]:
+        return [req.request_idx for req in self.requests_working.values()]
 
     def set_errored(self, error_msg):
         self.reset()
@@ -242,16 +277,20 @@ class ModelMetrics:
         self.workload_received = 0
         self.workload_cancelled = 0
         self.workload_errored = 0
+        self.workload_rejected = 0
         self.last_update = time.time()
 
 
 @dataclass
-class AutoScalaerData:
+class AutoScalerData:
     """Data that is reported to autoscaler"""
 
     id: int
+    version: str
     loadtime: float
     cur_load: float
+    rej_load: float
+    new_load: float
     error_msg: str
     max_perf: float
     cur_perf: float
@@ -260,6 +299,7 @@ class AutoScalaerData:
     num_requests_working: int
     num_requests_recieved: int
     additional_disk_usage: float
+    working_request_idxs: list[int]
     url: str
 
 

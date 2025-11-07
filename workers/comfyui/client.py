@@ -82,6 +82,7 @@ def call_custom_workflow_for_sd3(
         endpoint=message["endpoint"],
         reqnum=message["reqnum"],
         url=message["url"],
+        request_idx=message["request_idx"],
     )
     workflow = {
         "3": {

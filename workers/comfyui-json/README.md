@@ -12,9 +12,21 @@ A docker image is provided but you may use any if the above requirements are met
 
 ## Benchmarking
 
-A simple image generation benchmark runs when each worker initializes to validate GPU performance and identify underperforming machines.
+### Custom Benchmark Workflows
 
-The benchmark uses Stable Diffusion v1.5 with ComfyUI's default text-to-image workflow. Configure the benchmark complexity and duration using these variables:
+You can provide a custom ComfyUI workflow for benchmarking by creating `workers/comfyui-json/misc/benchmark.json`. This allows you to test performance using your preferred models and workflow complexity.
+
+**Ways to provide the benchmark file:**
+- Fork this repository and add your `benchmark.json` file
+- Write the file during worker provisioning (onstart script or setup phase)
+
+An example file is provided in the repository. To ensure varied generations, use the placeholder `__RANDOM_INT__` in place of static seed values - it will be replaced with a random integer for each benchmark run.
+
+### Default Benchmark (Fallback)
+
+If `benchmark.json` is not available, a simple image generation benchmark runs when each worker initializes. This validates GPU performance and helps identify underperforming machines.
+
+The default benchmark uses Stable Diffusion v1.5 with ComfyUI's standard text-to-image workflow. Configure it using these environment variables:
 
 | Environment Variable | Default Value | Description |
 | -------------------- | ------------- | ----------- |
@@ -24,7 +36,7 @@ The benchmark uses Stable Diffusion v1.5 with ComfyUI's default text-to-image wo
 
 Each benchmark run uses a random prompt from `misc/test_prompts.txt` and a random seed to ensure consistent GPU load patterns.
 
-### Calibrating Benchmark Duration
+#### Calibrating Fallback Benchmark Duration
 
 To screen for underperforming hardware, set `BENCHMARK_TEST_STEPS` to match your expected production workflow duration. This allows you to identify machines that won't meet performance requirements.
 

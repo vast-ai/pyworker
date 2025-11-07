@@ -292,12 +292,12 @@ def test_load_cmd(
     args = arg_parser.parse_args()
     if hasattr(args, "comfy_model"):
         os.environ["COMFY_MODEL"] = args.comfy_model
-    server_url = dict(
-        prod="https://run.vast.ai",
-        alpha="https://run-alpha.vast.ai",
-        candidate="https://run-candidate.vast.ai",
-        local="http://localhost:8080",
-    )[args.instance]
+    server_url = {
+        "prod": "https://run.vast.ai",
+        "alpha": "https://run-alpha.vast.ai",
+        "candidate": "https://run-candidate.vast.ai",
+        "local": "http://localhost:8080",
+    }.get(args.instance, "http://localhost:8080")
     run_test(
         num_requests=args.num_requests,
         requests_per_second=args.requests_per_second,
