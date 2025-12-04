@@ -66,10 +66,16 @@ then
         source ~/.local/bin/env
     fi
 
-    # Fork testing
-    [[ ! -d $SERVER_DIR ]] && git clone "${PYWORKER_REPO:-https://github.com/vast-ai/pyworker}" "$SERVER_DIR"
+    if [[ ! -d $SERVER_DIR ]]; then
+        git clone --depth=1 "${PYWORKER_REPO:-https://github.com/vast-ai/pyworker}" "$SERVER_DIR"
+    fi
+
     if [[ -n ${PYWORKER_REF:-} ]]; then
-        (cd "$SERVER_DIR" && git checkout "$PYWORKER_REF")
+        (
+            cd "$SERVER_DIR"
+            git fetch --depth=1 origin "$PYWORKER_REF"
+            git checkout "$PYWORKER_REF"
+        )
     fi
 
     uv venv --python-preference only-managed "$ENV_PATH" -p 3.10
