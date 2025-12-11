@@ -146,6 +146,7 @@ class Metrics:
     def _set_mtoken(self, mtoken: str) -> None:
         self.mtoken = mtoken
 
+
     #######################################Private#######################################
 
     async def __send_delete_requests_and_reset(self):
@@ -216,7 +217,7 @@ class Metrics:
                 id=self.id,
                 mtoken=self.mtoken,
                 version=self.version,
-                loadtime=(loadtime_snapshot or 0.0), 
+                loadtime=(loadtime_snapshot or 0.0),
                 new_load=self.model_metrics.workload_processing,
                 cur_load=self.model_metrics.cur_load,
                 rej_load=self.model_metrics.workload_rejected,
@@ -280,7 +281,6 @@ class Metrics:
 
         if sent:
             # clear the one-shot loadtime only if we actually sent *this* value
-            self.system_metrics.reset(expected=loadtime_snapshot)
             self.update_pending = False
             self.model_metrics.reset()
             self.last_metric_update = time.time()
