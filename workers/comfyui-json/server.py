@@ -91,7 +91,7 @@ class ComfyWorkflowHandler(EndpointHandler[ComfyWorkflowData]):
 backend = Backend(
     model_server_url=MODEL_SERVER_URL,
     model_log_file=os.environ["MODEL_LOG"],
-    allow_parallel_requests=False,
+    allow_parallel_requests=True,
     benchmark_handler=ComfyWorkflowHandler(
         benchmark_runs=3, benchmark_words=100
     ),
