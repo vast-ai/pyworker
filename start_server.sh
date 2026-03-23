@@ -214,6 +214,54 @@ fi
 
 export REPORT_ADDR WORKER_PORT USE_SSL UNSECURED
 
+# ─── SDK Deployment Mode ───────────────────────────────────────────────
+if [ "$IS_DEPLOYMENT" = "true" ]; then
+    echo "=== SDK Deployment Mode ==="
+    echo "DEPLOYMENT_ID: $DEPLOYMENT_ID"
+
+    DEPLOY_DIR="/workspace/deployment"
+    mkdir -p "$DEPLOY_DIR"
+
+    # Download deployment code via instance API key
+    echo "Downloading deployment code..."
+    DOWNLOAD_RESPONSE=$(curl -sS \
+        -H "Authorization: Bearer $CONTAINER_API_KEY" \
+        "https://console.vast.ai/api/v0/deployment/${DEPLOYMENT_ID}/download_url/")
+    DOWNLOAD_URL=$(python3 -c "import sys,json; print(json.load(sys.stdin)['download_url'])" <<< "$DOWNLOAD_RESPONSE")
+
+    if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "None" ]; then
+        report_error_and_exit "Failed to get deployment download URL"
+    fi
+
+    curl -sS -L "$DOWNLOAD_URL" -o "$DEPLOY_DIR/deployment.tar.gz"
+    cd "$DEPLOY_DIR" && tar xzf deployment.tar.gz
+    echo "Deployment code extracted."
+
+    # Source secrets if present
+    if [ -f "$DEPLOY_DIR/.secrets" ]; then
+        echo "Sourcing secrets..."
+        source "$DEPLOY_DIR/.secrets"
+    fi
+
+    # Run on_start.sh to completion if present
+    if [ -f "$DEPLOY_DIR/on_start.sh" ]; then
+        echo "Running on_start.sh..."
+        chmod +x "$DEPLOY_DIR/on_start.sh"
+        bash "$DEPLOY_DIR/on_start.sh"
+        echo "on_start.sh completed."
+    fi
+
+    # Install SDK (uses the install_vastai_sdk function which supports SDK_BRANCH/SDK_VERSION)
+    install_vastai_sdk
+
+    # Run deployment in serve mode
+    export VAST_DEPLOYMENT_MODE=serve
+    echo "Starting deployment: python3 $DEPLOY_DIR/deployment.py"
+    python3 "$DEPLOY_DIR/deployment.py"
+    exit $?
+fi
+# ─── End SDK Deployment Mode ───────────────────────────────────────────
+
 if ! cd "$SERVER_DIR"; then
     report_error_and_exit "Failed to cd into SERVER_DIR: $SERVER_DIR"
 fi
