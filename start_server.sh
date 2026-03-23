@@ -222,16 +222,31 @@ if [ "$IS_DEPLOYMENT" = "true" ]; then
     DEPLOY_DIR="/workspace/deployment"
     mkdir -p "$DEPLOY_DIR"
 
-    # Download deployment code via instance API key
-    echo "Downloading deployment code..."
-    DOWNLOAD_RESPONSE=$(curl -sS \
-        -H "Authorization: Bearer $CONTAINER_API_KEY" \
-        "https://console.vast.ai/api/v0/deployment/${DEPLOYMENT_ID}/download_url/")
-    DOWNLOAD_URL=$(python3 -c "import sys,json; print(json.load(sys.stdin)['download_url'])" <<< "$DOWNLOAD_RESPONSE")
+    VAST_API_BASE="${VAST_API_BASE:-https://console.vast.ai}"
 
-    if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "None" ]; then
-        report_error_and_exit "Failed to get deployment download URL"
-    fi
+    # Download deployment code via instance API key, retrying until blob is available
+    echo "Downloading deployment code..."
+    RETRY=0
+    while true; do
+        DOWNLOAD_RESPONSE=$(curl -sS \
+            -H "Authorization: Bearer $CONTAINER_API_KEY" \
+            "${VAST_API_BASE}/api/v0/deployment/${DEPLOYMENT_ID}/download_url/")
+        DOWNLOAD_URL=$(python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('download_url') or '')
+except: print('')
+" <<< "$DOWNLOAD_RESPONSE")
+
+        if [ -n "$DOWNLOAD_URL" ] && [ "$DOWNLOAD_URL" != "None" ]; then
+            break
+        fi
+
+        RETRY=$((RETRY + 1))
+        echo "Deployment code not yet available (attempt $RETRY), retrying in 10s... response: $DOWNLOAD_RESPONSE"
+        sleep 10
+    done
 
     curl -sS -L "$DOWNLOAD_URL" -o "$DEPLOY_DIR/deployment.tar.gz"
     cd "$DEPLOY_DIR" && tar xzf deployment.tar.gz
