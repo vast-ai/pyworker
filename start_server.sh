@@ -224,7 +224,9 @@ if [ "$IS_DEPLOYMENT" = "true" ]; then
 
     VAST_API_BASE="${VAST_API_BASE:-https://console.vast.ai}"
 
-    # Download deployment code via instance API key, retrying until blob is available
+    # Download deployment code, retrying until the blob is available on S3.
+    # The s3_key exists in the DB as soon as the deployment is created, but the
+    # actual upload may still be in flight from the client side.
     echo "Downloading deployment code..."
     RETRY=0
     while true; do
@@ -239,16 +241,25 @@ try:
 except: print('')
 " <<< "$DOWNLOAD_RESPONSE")
 
-        if [ -n "$DOWNLOAD_URL" ] && [ "$DOWNLOAD_URL" != "None" ]; then
+        if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "None" ]; then
+            RETRY=$((RETRY + 1))
+            echo "No download URL yet (attempt $RETRY), retrying in 10s... response: $DOWNLOAD_RESPONSE"
+            sleep 10
+            continue
+        fi
+
+        # Got a URL — try the actual S3 download
+        HTTP_CODE=$(curl -sS -L -o "$DEPLOY_DIR/deployment.tar.gz" -w "%{http_code}" "$DOWNLOAD_URL")
+        if [ "$HTTP_CODE" = "200" ]; then
             break
         fi
 
         RETRY=$((RETRY + 1))
-        echo "Deployment code not yet available (attempt $RETRY), retrying in 10s... response: $DOWNLOAD_RESPONSE"
+        echo "S3 download returned HTTP $HTTP_CODE (attempt $RETRY), blob not yet uploaded. Retrying in 10s..."
+        rm -f "$DEPLOY_DIR/deployment.tar.gz"
         sleep 10
     done
 
-    curl -sS -L "$DOWNLOAD_URL" -o "$DEPLOY_DIR/deployment.tar.gz"
     cd "$DEPLOY_DIR" && tar xzf deployment.tar.gz
     echo "Deployment code extracted."
 
