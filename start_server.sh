@@ -227,63 +227,13 @@ if [ "$IS_DEPLOYMENT" = "true" ]; then
     # Download deployment code, retrying until the blob is available on S3.
     # The s3_key exists in the DB as soon as the deployment is created, but the
     # actual upload may still be in flight from the client side.
-    echo "Downloading deployment code..."
-    RETRY=0
-    while true; do
-        DOWNLOAD_RESPONSE=$(curl -sS \
-            -H "Authorization: Bearer $CONTAINER_API_KEY" \
-            "${VAST_API_BASE}/api/v0/deployment/${DEPLOYMENT_ID}/download_url/")
-        DOWNLOAD_URL=$(python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(d.get('download_url') or '')
-except: print('')
-" <<< "$DOWNLOAD_RESPONSE")
-
-        if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "None" ]; then
-            RETRY=$((RETRY + 1))
-            echo "No download URL yet (attempt $RETRY), retrying in 10s... response: $DOWNLOAD_RESPONSE"
-            sleep 10
-            continue
-        fi
-
-        # Got a URL — try the actual S3 download
-        HTTP_CODE=$(curl -sS -L -o "$DEPLOY_DIR/deployment.tar.gz" -w "%{http_code}" "$DOWNLOAD_URL")
-        if [ "$HTTP_CODE" = "200" ]; then
-            break
-        fi
-
-        RETRY=$((RETRY + 1))
-        echo "S3 download returned HTTP $HTTP_CODE (attempt $RETRY), blob not yet uploaded. Retrying in 10s..."
-        rm -f "$DEPLOY_DIR/deployment.tar.gz"
-        sleep 10
-    done
-
-    cd "$DEPLOY_DIR" && tar xzf deployment.tar.gz
-    echo "Deployment code extracted."
-
-    # Source secrets if present
-    if [ -f "$DEPLOY_DIR/.secrets" ]; then
-        echo "Sourcing secrets..."
-        source "$DEPLOY_DIR/.secrets"
-    fi
-
-    # Run on_start.sh to completion if present
-    if [ -f "$DEPLOY_DIR/on_start.sh" ]; then
-        echo "Running on_start.sh..."
-        chmod +x "$DEPLOY_DIR/on_start.sh"
-        bash "$DEPLOY_DIR/on_start.sh"
-        echo "on_start.sh completed."
-    fi
 
     # Install SDK (uses the install_vastai_sdk function which supports SDK_BRANCH/SDK_VERSION)
     install_vastai_sdk
-
     # Run deployment in serve mode
     export VAST_DEPLOYMENT_MODE=serve
     echo "Starting deployment: python3 $DEPLOY_DIR/deployment.py"
-    python3 "$DEPLOY_DIR/deployment.py"
+    serve-vast-deployment
     exit $?
 fi
 # ─── End SDK Deployment Mode ───────────────────────────────────────────
