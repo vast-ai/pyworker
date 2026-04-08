@@ -9,7 +9,7 @@ This repository contains **example PyWorkers** used by Vast.ai’s default Serve
 - Optionally supports FIFO queueing when the backend cannot process concurrent requests
 - Detects readiness/failure from model logs and runs a benchmark to estimate throughput
 
-> Important: The **core PyWorker framework** (Worker, WorkerConfig, HandlerConfig, BenchmarkConfig, LogActionConfig) is provided by the **`vastai` / `vastai-sdk`** Python package (https://github.com/vast-ai/vast-sdk). This repo focuses on *worker implementations and examples*, not the framework internals.
+> Important: The **core PyWorker framework** (Worker, WorkerConfig, HandlerConfig, BenchmarkConfig, LogActionConfig) is provided by the **`vastai`** Python package (https://github.com/vast-ai/vast-cli). This repo focuses on *worker implementations and examples*, not the framework internals.
 
 ## Repository Purpose
 

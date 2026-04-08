@@ -53,39 +53,39 @@ JSON
     exit 1
 }
 
-function install_vastai_sdk() {
+function install_vastai() {
     local uv_flags=()
     if [ "${USE_SYSTEM_PYTHON:-}" = "true" ]; then
         uv_flags+=(--system --break-system-packages)
     fi
     if [ "$FORCE_UPDATE" = true ]; then
         uv_flags+=(--force-reinstall)
-        echo "Force reinstalling vastai-sdk"
+        echo "Force reinstalling vastai"
     fi
 
-    # If SDK_BRANCH is set, install vastai-sdk from the vast-sdk repo at that branch/tag/commit.
+    # If SDK_BRANCH is set, install vastai from the vast-cli repo at that branch/tag/commit.
     if [ -n "${SDK_BRANCH:-}" ]; then
         if [ -n "${SDK_VERSION:-}" ]; then
             echo "WARNING: Both SDK_BRANCH and SDK_VERSION are set; using SDK_BRANCH=${SDK_BRANCH}"
         fi
-        echo "Installing vastai-sdk from https://github.com/vast-ai/vast-sdk/ @ ${SDK_BRANCH}"
-        if ! uv pip install "${uv_flags[@]}" "vastai-sdk @ git+https://github.com/vast-ai/vast-sdk.git@${SDK_BRANCH}"; then
-            report_error_and_exit "Failed to install vastai-sdk from vast-ai/vast-sdk@${SDK_BRANCH}"
+        echo "Installing vastai from https://github.com/vast-ai/vast-cli/ @ ${SDK_BRANCH}"
+        if ! uv pip install "${uv_flags[@]}" "vastai @ git+https://github.com/vast-ai/vast-cli.git@${SDK_BRANCH}"; then
+            report_error_and_exit "Failed to install vastai from vast-ai/vast-cli@${SDK_BRANCH}"
         fi
         return 0
     fi
 
     if [ -n "${SDK_VERSION:-}" ]; then
-        echo "Installing vastai-sdk version ${SDK_VERSION}"
-        if ! uv pip install "${uv_flags[@]}" "vastai-sdk==${SDK_VERSION}"; then
-            report_error_and_exit "Failed to install vastai-sdk==${SDK_VERSION}"
+        echo "Installing vastai version ${SDK_VERSION}"
+        if ! uv pip install "${uv_flags[@]}" "vastai==${SDK_VERSION}"; then
+            report_error_and_exit "Failed to install vastai==${SDK_VERSION}"
         fi
         return 0
     fi
 
-    echo "Installing default vastai-sdk"
-    if ! uv pip install "${uv_flags[@]}" vastai-sdk; then
-        report_error_and_exit "Failed to install vastai-sdk"
+    echo "Installing default vastai"
+    if ! uv pip install "${uv_flags[@]}" vastai; then
+        report_error_and_exit "Failed to install vastai"
     fi
 }
 
@@ -140,7 +140,7 @@ if [ "${USE_SYSTEM_PYTHON:-}" = "true" ]; then
             fi
         fi
     fi
-    install_vastai_sdk
+    install_vastai
     touch ~/.no_auto_tmux
 elif [ ! -d "$ENV_PATH" ]; then
     echo "setting up venv"
@@ -197,7 +197,7 @@ elif [ ! -d "$ENV_PATH" ]; then
         report_error_and_exit "Failed to install Python requirements"
     fi
 
-    install_vastai_sdk
+    install_vastai
 
     if ! touch ~/.no_auto_tmux; then
         report_error_and_exit "Failed to create ~/.no_auto_tmux"
@@ -237,7 +237,7 @@ else
             fi
         fi
 
-        install_vastai_sdk
+        install_vastai
     fi
 fi
 
@@ -318,8 +318,8 @@ if [ "$IS_DEPLOYMENT" = "true" ]; then
     # The s3_key exists in the DB as soon as the deployment is created, but the
     # actual upload may still be in flight from the client side.
 
-    # Install SDK (uses the install_vastai_sdk function which supports SDK_BRANCH/SDK_VERSION)
-    install_vastai_sdk
+    # Install SDK (uses the install_vastai function which supports SDK_BRANCH/SDK_VERSION)
+    install_vastai
     # Run deployment in serve mode
     export VAST_DEPLOYMENT_MODE=serve
     echo "Starting deployment: python3 $DEPLOY_DIR/deployment.py"

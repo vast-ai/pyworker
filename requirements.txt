@@ -1,1 +1,1 @@
-vastai-sdk>=0.3.0
+vastai>=0.3.0

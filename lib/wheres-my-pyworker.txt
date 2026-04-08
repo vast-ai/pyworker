@@ -1,16 +1,16 @@
 # Where did the PyWorker code go?
-We have moved the PyWorker source code into the `vastai-sdk` Python SDK.
+We have moved the PyWorker source code into the `vastai` Python package.
 You can install it with
 ```
-pip install vastai-sdk
+pip install vastai
 ```
 
 All of the source code can be found here:
-https://github.com/vast-ai/vast-sdk
+https://github.com/vast-ai/vast-cli
 
 And can be imported from vastai.serverless.server.lib
 
-Serverless instances automatically run the start_server.sh script, which installs the vastai-sdk.
+Serverless instances automatically run the start_server.sh script, which installs the vastai package.
 This is how the PyWorker source code makes it onto your serverless instances.
 You provide a worker.py file in your PYWORKER_REPO, and the start_server.sh will 
 create and run a PyWorker according to your configuration defined in the file.
