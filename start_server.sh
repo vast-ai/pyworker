@@ -77,8 +77,8 @@ function install_vastai() {
 
     if [ -n "${SDK_VERSION:-}" ]; then
         echo "Installing vastai version ${SDK_VERSION}"
-        if ! uv pip install "${uv_flags[@]}" "vastai==${SDK_VERSION}"; then
-            report_error_and_exit "Failed to install vastai==${SDK_VERSION}"
+        if ! uv pip install "${uv_flags[@]}" "vastai-vast==${SDK_VERSION}"; then
+            report_error_and_exit "Failed to install vastai-vast==${SDK_VERSION}"
         fi
         return 0
     fi
