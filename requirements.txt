@@ -1,2 +1,2 @@
 vastai-sdk>=0.3.0
-nltk
+nltk==3.9.4 
