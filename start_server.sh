@@ -60,32 +60,32 @@ function install_vastai_sdk() {
     fi
     if [ "$FORCE_UPDATE" = true ]; then
         uv_flags+=(--force-reinstall)
-        echo "Force reinstalling vastai-sdk"
+        echo "Force reinstalling vastai"
     fi
 
-    # If SDK_BRANCH is set, install vastai-sdk from the vast-sdk repo at that branch/tag/commit.
+    # If SDK_BRANCH is set, install vastai from the vast-cli repo at that branch/tag/commit.
     if [ -n "${SDK_BRANCH:-}" ]; then
         if [ -n "${SDK_VERSION:-}" ]; then
             echo "WARNING: Both SDK_BRANCH and SDK_VERSION are set; using SDK_BRANCH=${SDK_BRANCH}"
         fi
-        echo "Installing vastai-sdk from https://github.com/vast-ai/vast-sdk/ @ ${SDK_BRANCH}"
-        if ! uv pip install "${uv_flags[@]}" "vastai-sdk @ git+https://github.com/vast-ai/vast-sdk.git@${SDK_BRANCH}"; then
-            report_error_and_exit "Failed to install vastai-sdk from vast-ai/vast-sdk@${SDK_BRANCH}"
+        echo "Installing vastai from https://github.com/vast-ai/vast-cli/ @ ${SDK_BRANCH}"
+        if ! uv pip install "${uv_flags[@]}" "vastai @ git+https://github.com/vast-ai/vast-cli.git@${SDK_BRANCH}"; then
+            report_error_and_exit "Failed to install vastai from vast-ai/vast-cli@${SDK_BRANCH}"
         fi
         return 0
     fi
 
     if [ -n "${SDK_VERSION:-}" ]; then
-        echo "Installing vastai-sdk version ${SDK_VERSION}"
-        if ! uv pip install "${uv_flags[@]}" "vastai-sdk==${SDK_VERSION}"; then
-            report_error_and_exit "Failed to install vastai-sdk==${SDK_VERSION}"
+        echo "Installing vastai version ${SDK_VERSION}"
+        if ! uv pip install "${uv_flags[@]}" "vastai==${SDK_VERSION}"; then
+            report_error_and_exit "Failed to install vastai==${SDK_VERSION}"
         fi
         return 0
     fi
 
-    echo "Installing default vastai-sdk"
-    if ! uv pip install "${uv_flags[@]}" vastai-sdk; then
-        report_error_and_exit "Failed to install vastai-sdk"
+    echo "Installing default vastai"
+    if ! uv pip install "${uv_flags[@]}" vastai; then
+        report_error_and_exit "Failed to install vastai"
     fi
 }
 
@@ -339,19 +339,19 @@ set +e
 PY_STATUS=1
 
 if [ -f "$SERVER_DIR/worker.py" ]; then
-    echo "trying worker.py"
+    echo "Running worker.py"
     python3 -m "worker" |& tee -a "$PYWORKER_LOG"
     PY_STATUS=${PIPESTATUS[0]}
 fi
 
 if [ "${PY_STATUS}" -ne 0 ] && [ -f "$SERVER_DIR/workers/$BACKEND/worker.py" ]; then
-    echo "trying workers.${BACKEND}.worker"
+    echo "Running workers.${BACKEND}.worker"
     python3 -m "workers.${BACKEND}.worker" |& tee -a "$PYWORKER_LOG"
     PY_STATUS=${PIPESTATUS[0]}
 fi
 
 if [ "${PY_STATUS}" -ne 0 ] && [ -f "$SERVER_DIR/workers/$BACKEND/server.py" ]; then
-    echo "trying workers.${BACKEND}.server"
+    echo "Running workers.${BACKEND}.server"
     python3 -m "workers.${BACKEND}.server" |& tee -a "$PYWORKER_LOG"
     PY_STATUS=${PIPESTATUS[0]}
 fi
@@ -365,4 +365,4 @@ if [ "${PY_STATUS}" -ne 0 ]; then
     report_error_and_exit "PyWorker exited with status ${PY_STATUS}"
 fi
 
-echo "launching PyWorker server done"
+echo "PyWorker bootstrap complete"
