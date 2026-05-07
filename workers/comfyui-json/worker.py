@@ -92,61 +92,102 @@ WELLKNOWN_BENCHMARK = Path("/opt/comfyui-api-wrapper/workflows/pyworker_benchmar
 
 log = logging.getLogger(__name__)
 
+# Used when test_prompts.txt is unreadable or empty. Bare and generic
+# on purpose — this is a benchmark seed, not a creative output.
+_FALLBACK_PROMPT = "a still life on a wooden table, soft daylight"
 
-def _resolve_benchmark_path() -> Path | None:
-    """Return the path to the custom benchmark workflow, or None if absent.
 
-    See module docstring for the precedence rule. A set-but-broken
-    ``$BENCHMARK_JSON_PATH`` logs a warning then falls through to the
-    well-known path, so a typo in the env var doesn't silently mask a
-    provisioned benchmark sitting at the standard location.
+def _env_int(name: str, default: int) -> int:
+    """Read an integer env var, warning + falling back on bad values."""
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        log.warning("ignoring %s=%r (not an int); using default %d", name, raw, default)
+        return default
+
+
+def _try_load_workflow(path: Path) -> dict | None:
+    """Load and return a benchmark workflow from ``path``.
+
+    Returns None on any failure (path missing, not a regular file,
+    unreadable, invalid JSON) so the caller can fall through to the
+    next tier rather than dropping straight to the SD1.5 default.
     """
-    if BENCHMARK_FILE.exists():
-        return BENCHMARK_FILE
-    env_path = os.getenv("BENCHMARK_JSON_PATH")
-    if env_path:
-        path = Path(env_path)
-        if path.exists():
-            return path
-        log.warning("BENCHMARK_JSON_PATH=%s does not exist; trying fallbacks", path)
-    if WELLKNOWN_BENCHMARK.exists():
-        return WELLKNOWN_BENCHMARK
-    return None
-
-
-def _custom_workflow_payload() -> dict | None:
-    """Build a payload from a custom benchmark workflow JSON, or None if unavailable."""
-    path = _resolve_benchmark_path()
-    if path is None:
+    if not path.is_file():
         return None
     try:
         with open(path) as f:
-            workflow = json.load(f)
+            return json.load(f)
     except (json.JSONDecodeError, OSError) as e:
-        log.error("Failed to load %s: %s; falling back to default benchmark", path, e)
+        log.warning("Failed to load %s: %s; trying next tier", path, e)
         return None
-    log.info("Using custom benchmark workflow from %s", path)
-    return {
-        "input": {
-            "request_id": f"test-{random.randint(1000, 99999)}",
-            "workflow_json": workflow,
+
+
+def _custom_workflow_payload() -> dict | None:
+    """Try each benchmark workflow tier in order; return the first one
+    that loads cleanly as a payload, or None if every tier is absent /
+    unreadable. Tiers (in order): in-tree ``misc/benchmark.json``,
+    ``$BENCHMARK_JSON_PATH``, well-known base-image symlink.
+    """
+    env_path = os.getenv("BENCHMARK_JSON_PATH")
+    candidates = [("misc", BENCHMARK_FILE)]
+    if env_path:
+        candidates.append(("env", Path(env_path)))
+    candidates.append(("well-known", WELLKNOWN_BENCHMARK))
+
+    for label, path in candidates:
+        # Surface a warning specifically when the operator pointed
+        # BENCHMARK_JSON_PATH at something we can't use — silent
+        # fall-through there is a footgun (typo => SD1.5 fallback,
+        # operator wonders why custom benchmark didn't take).
+        if not path.is_file():
+            if label == "env":
+                log.warning(
+                    "BENCHMARK_JSON_PATH=%s is not a readable file; trying fallbacks", path
+                )
+            continue
+        workflow = _try_load_workflow(path)
+        if workflow is None:
+            continue
+        log.info("Using custom benchmark workflow from %s (%s)", path, label)
+        return {
+            "input": {
+                "request_id": f"test-{random.randint(1000, 99999)}",
+                "workflow_json": workflow,
+            }
         }
-    }
+    return None
+
+
+def _load_prompts() -> list[str]:
+    """Read misc/test_prompts.txt; defensive against missing/empty file."""
+    try:
+        with open(TEST_PROMPTS) as f:
+            prompts = [line.strip() for line in f if line.strip()]
+    except OSError as e:
+        log.warning("could not read %s: %s; using built-in fallback prompt", TEST_PROMPTS, e)
+        return [_FALLBACK_PROMPT]
+    if not prompts:
+        log.warning("%s is empty; using built-in fallback prompt", TEST_PROMPTS)
+        return [_FALLBACK_PROMPT]
+    return prompts
 
 
 def _default_payload() -> dict:
     """Build the SD1.5 Text2Image fallback payload."""
-    with open(TEST_PROMPTS) as f:
-        prompts = [line.strip() for line in f if line.strip()]
+    prompts = _load_prompts()
     return {
         "input": {
             "request_id": f"test-{random.randint(1000, 99999)}",
             "modifier": "Text2Image",
             "modifications": {
                 "prompt": random.choice(prompts),
-                "width":  int(os.getenv("BENCHMARK_TEST_WIDTH",  512)),
-                "height": int(os.getenv("BENCHMARK_TEST_HEIGHT", 512)),
-                "steps":  int(os.getenv("BENCHMARK_TEST_STEPS",  20)),
+                "width":  _env_int("BENCHMARK_TEST_WIDTH",  512),
+                "height": _env_int("BENCHMARK_TEST_HEIGHT", 512),
+                "steps":  _env_int("BENCHMARK_TEST_STEPS",  20),
                 "seed":   random.randint(0, sys.maxsize),
             }
         }
