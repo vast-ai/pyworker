@@ -2,10 +2,15 @@
 
 Each worker runs a benchmark on warm-up. The payload is selected as follows:
 
-  1. If ``misc/benchmark.json`` exists, it is used as a custom ComfyUI
-     workflow (recommended: match the workflow your endpoint will actually
-     serve, so the autoscaler's performance estimate is meaningful).
-  2. Otherwise an SD1.5 Text2Image fallback runs, parameterised by the
+  1. If ``misc/benchmark.json`` exists in the cloned worker tree, it is
+     used as a custom ComfyUI workflow. Use this if you fork the repo and
+     bake in your workflow.
+  2. Else, if ``$BENCHMARK_JSON_PATH`` is set and points at a readable
+     file, it is used. Use this from a provisioning script — provisioning
+     runs before pyworker is cloned, so it cannot write into ``misc/``,
+     but it can drop the workflow elsewhere (e.g. ``/workspace/``) and
+     export this env var.
+  3. Otherwise an SD1.5 Text2Image fallback runs, parameterised by the
      ``BENCHMARK_TEST_{WIDTH,HEIGHT,STEPS}`` env vars and a random prompt
      from ``misc/test_prompts.txt``.
 
@@ -53,17 +58,37 @@ TEST_PROMPTS   = MISC_DIR / "test_prompts.txt"
 log = logging.getLogger(__name__)
 
 
+def _resolve_benchmark_path() -> Path | None:
+    """Return the path to the custom benchmark workflow, or None if absent.
+
+    See module docstring for the precedence rule. ``$BENCHMARK_JSON_PATH``
+    is logged as a warning when set but missing, so a misconfigured
+    provisioning script doesn't silently degrade to the fallback benchmark.
+    """
+    if BENCHMARK_FILE.exists():
+        return BENCHMARK_FILE
+    env_path = os.getenv("BENCHMARK_JSON_PATH")
+    if not env_path:
+        return None
+    path = Path(env_path)
+    if not path.exists():
+        log.warning("BENCHMARK_JSON_PATH=%s does not exist; falling back to default benchmark", path)
+        return None
+    return path
+
+
 def _custom_workflow_payload() -> dict | None:
-    """Build a payload from ``misc/benchmark.json``, or None if unavailable."""
-    if not BENCHMARK_FILE.exists():
+    """Build a payload from a custom benchmark workflow JSON, or None if unavailable."""
+    path = _resolve_benchmark_path()
+    if path is None:
         return None
     try:
-        with open(BENCHMARK_FILE) as f:
+        with open(path) as f:
             workflow = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
-        log.error("Failed to load %s: %s; falling back to default benchmark", BENCHMARK_FILE, e)
+        log.error("Failed to load %s: %s; falling back to default benchmark", path, e)
         return None
-    log.info("Using custom benchmark workflow from %s", BENCHMARK_FILE)
+    log.info("Using custom benchmark workflow from %s", path)
     return {
         "input": {
             "request_id": f"test-{random.randint(1000, 99999)}",

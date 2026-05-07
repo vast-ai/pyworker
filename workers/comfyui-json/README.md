@@ -104,13 +104,15 @@ Images will be saved locally AND uploaded to `s3://{bucket}/comfyui/{filename}`.
 
 ### Custom Benchmark Workflows
 
-You can provide a custom ComfyUI workflow for benchmarking by creating `workers/comfyui-json/misc/benchmark.json`. This allows you to test performance using your preferred models and workflow complexity.
+You can provide a custom ComfyUI workflow for benchmarking. This allows you to test performance using your preferred models and workflow complexity.
 
 **Ways to provide the benchmark file:**
-- Fork this repository and add your `benchmark.json` file
-- Write the file during worker provisioning (onstart script or setup phase)
+- **Fork this repository** and commit your workflow to `workers/comfyui-json/misc/benchmark.json`.
+- **Write the file during provisioning** to a path *outside* the pyworker tree (e.g. `/workspace/benchmark.json`) and export `BENCHMARK_JSON_PATH` so the worker can find it. The pyworker repo is cloned by `start_server.sh` *after* provisioning runs, so provisioning cannot write into `misc/` directly — the destination would be clobbered, or the clone would fail.
 
-An example file is provided in the repository. To ensure varied generations, use the placeholder `__RANDOM_INT__` in place of static seed values - it will be replaced with a random integer for each benchmark run.
+If both are present, the in-tree `misc/benchmark.json` wins; `BENCHMARK_JSON_PATH` is consulted only when no in-tree file exists. If the env var is set but points at a missing or unreadable file, the worker logs a warning and falls back to the default benchmark.
+
+An example workflow is provided at `workers/comfyui-json/misc/benchmark.json.example`. To ensure varied generations, use the placeholder `__RANDOM_INT__` in place of static seed values — it will be replaced with a random integer for each benchmark run.
 
 ### Default Benchmark (Fallback)
 
@@ -120,9 +122,10 @@ The default benchmark uses Stable Diffusion v1.5 with ComfyUI's standard text-to
 
 | Environment Variable | Default Value | Description |
 | -------------------- | ------------- | ----------- |
-| BENCHMARK_TEST_WIDTH | 512 | Image width (pixels) |
-| BENCHMARK_TEST_HEIGHT | 512 | Image height (pixels) |
-| BENCHMARK_TEST_STEPS | 20 | Number of denoising steps |
+| BENCHMARK_JSON_PATH | (unset) | Path to a custom workflow file outside the pyworker tree. Used only if `misc/benchmark.json` is absent. |
+| BENCHMARK_TEST_WIDTH | 512 | Fallback benchmark: image width (pixels) |
+| BENCHMARK_TEST_HEIGHT | 512 | Fallback benchmark: image height (pixels) |
+| BENCHMARK_TEST_STEPS | 20 | Fallback benchmark: number of denoising steps |
 
 Each benchmark run uses a random prompt from `misc/test_prompts.txt` and a random seed to ensure consistent GPU load patterns.
 
