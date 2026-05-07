@@ -29,7 +29,6 @@ import logging
 import os
 import random
 import sys
-import time
 from pathlib import Path
 
 from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig, BenchmarkConfig
@@ -66,42 +65,7 @@ TEST_PROMPTS   = MISC_DIR / "test_prompts.txt"
 # letting the base image work out-of-the-box without any env var.
 WELLKNOWN_BENCHMARK = Path("/opt/comfyui-api-wrapper/workflows/pyworker_benchmark.json")
 
-# How long to wait for the well-known symlink to appear before giving up.
-# convert-workflows.sh and the pyworker both unblock at "ComfyUI ready",
-# but conversion takes a few seconds — without this wait the first
-# benchmark loses the race and silently drops to the SD1.5 fallback.
-# Tunable for slow setups (many workflows / slow disk).
-_WELLKNOWN_WAIT_SECS = float(os.getenv("BENCHMARK_WAIT_TIMEOUT", "30"))
-
 log = logging.getLogger(__name__)
-
-_wait_done = False
-
-
-def _wait_for_wellknown() -> None:
-    """Wait at most once per process for ``WELLKNOWN_BENCHMARK`` to appear.
-
-    Skipped immediately if the parent directory doesn't exist (we're
-    not on the base image, so the symlink will never appear and there's
-    no point burning the timeout). Skipped on subsequent calls regardless
-    of outcome — if the file *does* show up later, ``_resolve_benchmark_path``
-    will still pick it up via the regular ``.exists()`` check on the next
-    benchmark run.
-    """
-    global _wait_done
-    if _wait_done:
-        return
-    _wait_done = True
-    if WELLKNOWN_BENCHMARK.exists() or not WELLKNOWN_BENCHMARK.parent.is_dir():
-        return
-    deadline = time.monotonic() + _WELLKNOWN_WAIT_SECS
-    log.info("Waiting up to %.0fs for %s", _WELLKNOWN_WAIT_SECS, WELLKNOWN_BENCHMARK)
-    while time.monotonic() < deadline:
-        if WELLKNOWN_BENCHMARK.exists():
-            log.info("Found %s after wait", WELLKNOWN_BENCHMARK)
-            return
-        time.sleep(0.5)
-    log.info("%s did not appear within %.0fs; falling through", WELLKNOWN_BENCHMARK, _WELLKNOWN_WAIT_SECS)
 
 
 def _resolve_benchmark_path() -> Path | None:
@@ -120,7 +84,6 @@ def _resolve_benchmark_path() -> Path | None:
         if path.exists():
             return path
         log.warning("BENCHMARK_JSON_PATH=%s does not exist; trying fallbacks", path)
-    _wait_for_wellknown()
     if WELLKNOWN_BENCHMARK.exists():
         return WELLKNOWN_BENCHMARK
     return None
