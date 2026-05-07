@@ -10,7 +10,12 @@ Each worker runs a benchmark on warm-up. The payload is selected as follows:
      runs before pyworker is cloned, so it cannot write into ``misc/``,
      but it can drop the workflow elsewhere (e.g. ``/workspace/``) and
      export this env var.
-  3. Otherwise an SD1.5 Text2Image fallback runs, parameterised by the
+  3. Else, if the well-known path
+     ``/opt/comfyui-api-wrapper/workflows/pyworker_benchmark.json`` exists,
+     it is used. The vast.ai ComfyUI base image's ``convert-workflows.sh``
+     maintains this as a symlink to the first provisioned workflow, so on
+     that image no env var is needed.
+  4. Otherwise an SD1.5 Text2Image fallback runs, parameterised by the
      ``BENCHMARK_TEST_{WIDTH,HEIGHT,STEPS}`` env vars and a random prompt
      from ``misc/test_prompts.txt``.
 
@@ -55,26 +60,33 @@ MISC_DIR       = Path(__file__).parent / "misc"
 BENCHMARK_FILE = MISC_DIR / "benchmark.json"
 TEST_PROMPTS   = MISC_DIR / "test_prompts.txt"
 
+# Well-known location maintained by the vast.ai ComfyUI base image.
+# convert-workflows.sh symlinks this to the first provisioned workflow,
+# letting the base image work out-of-the-box without any env var.
+WELLKNOWN_BENCHMARK = Path("/opt/comfyui-api-wrapper/workflows/pyworker_benchmark.json")
+
 log = logging.getLogger(__name__)
 
 
 def _resolve_benchmark_path() -> Path | None:
     """Return the path to the custom benchmark workflow, or None if absent.
 
-    See module docstring for the precedence rule. ``$BENCHMARK_JSON_PATH``
-    is logged as a warning when set but missing, so a misconfigured
-    provisioning script doesn't silently degrade to the fallback benchmark.
+    See module docstring for the precedence rule. A set-but-broken
+    ``$BENCHMARK_JSON_PATH`` logs a warning then falls through to the
+    well-known path, so a typo in the env var doesn't silently mask a
+    provisioned benchmark sitting at the standard location.
     """
     if BENCHMARK_FILE.exists():
         return BENCHMARK_FILE
     env_path = os.getenv("BENCHMARK_JSON_PATH")
-    if not env_path:
-        return None
-    path = Path(env_path)
-    if not path.exists():
-        log.warning("BENCHMARK_JSON_PATH=%s does not exist; falling back to default benchmark", path)
-        return None
-    return path
+    if env_path:
+        path = Path(env_path)
+        if path.exists():
+            return path
+        log.warning("BENCHMARK_JSON_PATH=%s does not exist; trying fallbacks", path)
+    if WELLKNOWN_BENCHMARK.exists():
+        return WELLKNOWN_BENCHMARK
+    return None
 
 
 def _custom_workflow_payload() -> dict | None:
