@@ -33,44 +33,60 @@ from pathlib import Path
 
 from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig, BenchmarkConfig
 
-# ComfyUI model configuration. The model server here is the ai-dock
+# ComfyUI model configuration. The model server is ai-dock's
 # comfyui-api-wrapper sitting in front of ComfyUI itself, not ComfyUI's
-# own port (18188). We watch the api-wrapper's log rather than ComfyUI's
-# because the api-wrapper runs convert-workflows.sh before launching
-# uvicorn — by the time uvicorn logs "Uvicorn running on ...", the
-# benchmark workflows are converted, the pyworker_benchmark.json symlink
-# exists, and :18288 is accepting connections. Watching ComfyUI's log
-# fires the benchmark too early (before the api-wrapper is reachable),
-# which the SDK can't recover from since __call_backend doesn't retry
-# connection-refused.
+# own port (18188). We tail the api-wrapper's log rather than ComfyUI's
+# and key off the api-wrapper's own structured readiness/fault signals:
+#
+#   BACKENDS_READY            — api-wrapper has confirmed every ComfyUI
+#                               backend passes HTTP+WS probes. Until
+#                               this fires, posting to /generate/sync
+#                               can hit "Cannot connect to host" inside
+#                               the api-wrapper, which the SDK can't
+#                               recover from since __call_backend
+#                               doesn't retry connection-refused.
+#   BACKENDS_READY_TIMEOUT    — backends never reachable within
+#                               api-wrapper's deadline. Worker is
+#                               unrecoverable; mark errored.
+#   BACKEND_UNRECOVERABLE     — CUDA fault / illegal memory access on a
+#                               backend's GPU. Same fate.
+#   Application startup failed — uvicorn's own ASGI lifespan failed.
+#
+# These tokens are emitted by ai-dock/comfyui-api-wrapper >= the
+# "feat/backend-readiness-log-signals" change. Older wrappers won't
+# emit BACKENDS_READY, so warm-up will stall — pin the wrapper version
+# accordingly.
 MODEL_SERVER_URL           = 'http://127.0.0.1'
 MODEL_SERVER_PORT          = 18288
 MODEL_LOG_FILE             = '/var/log/portal/api-wrapper.log'
 MODEL_HEALTHCHECK_ENDPOINT = "/health"
 
-# api-wrapper log messages
+# Trigger benchmark only after the full stack (api-wrapper + ComfyUI
+# backends) is reachable. See BACKENDS_READY in the comment above.
 MODEL_LOAD_LOG_MSG = [
-    "Uvicorn running on"
+    "BACKENDS_READY",
 ]
 
-# LogAction.ModelError is fatal: the SDK calls backend_errored() and the
-# worker is locked into a permanent error state. Patterns must therefore
-# only match conditions where the api-wrapper genuinely cannot serve any
-# request — supervisord restarts on uvicorn exit, so a real failure
-# self-heals rather than dragging the worker down.
+# LogAction.ModelError is fatal: the SDK calls backend_errored() and
+# locks the worker into a permanent error state. Patterns must
+# therefore only match conditions where the api-wrapper genuinely
+# cannot serve any request — supervisord restarts on uvicorn exit, so
+# a real failure self-heals rather than dragging the worker down.
 #
 # Notably *not* matched here:
 #   - per-request errors (PreprocessWorker failures, ComfyUI workflow
 #     validation, "Value not in list:") — one malformed client payload
 #     would otherwise kill the worker
-#   - "CUDA out of memory" — surfaces both as misconfigured GPU (which
-#     the benchmark-failure path already catches via backend_errored)
-#     and as a too-greedy client request, which is indistinguishable
-#     from a substring match
+#   - "CUDA out of memory" — surfaces both as a misconfigured GPU
+#     (which the benchmark-failure path already catches via
+#     backend_errored) and as a too-greedy client request, which is
+#     indistinguishable from a substring match
 #   - convert-workflows.sh warnings — that script is not load-bearing
-#     for serving (uvicorn starts even if conversion partially failed)
+#     for serving
 MODEL_ERROR_LOG_MSGS = [
-    "Application startup failed",  # uvicorn ASGI lifespan startup failed -> uvicorn exits
+    "BACKENDS_READY_TIMEOUT",       # backends never reachable
+    "BACKEND_UNRECOVERABLE",        # CUDA fault latched per backend
+    "Application startup failed",   # uvicorn ASGI lifespan startup failed
 ]
 
 # LogAction.Info is purely informational (echoes log lines into the vast
