@@ -97,9 +97,9 @@ async def null_lifecycle():
     # vastai.serverless.server.lib.backend.
     try:
         with open(".has_benchmark", "w") as fh:
-            fh.write("100")
+            fh.write("150")
     except OSError as e:
-        log.warning(f"Could not pin benchmark cache to 100: {e}")
+        log.warning(f"Could not pin benchmark cache to 150: {e}")
 
     app = _build_internal_app()
     runner = web.AppRunner(app)
@@ -129,12 +129,10 @@ async def reserve_worker(**params: object) -> dict:
     global _active_reservation
 
     if params.get(BENCHMARK_SENTINEL):
-        # The framework computes max_throughput = workload / time during the
-        # startup benchmark. A null worker has no real throughput concept,
-        # so we deliberately take ~1s with workload=100 to pin
-        # max_throughput to ~100. Without this the near-instant benchmark
-        # would report hundreds of thousands of workload/sec, distorting
-        # any downstream capacity math.
+        # Fallback path only — the lifecycle pre-populates .has_benchmark
+        # with "150" so __run_benchmark normally short-circuits and never
+        # invokes us. If the cache write failed, sleep ~1s so the
+        # time-based calculation lands near 150 (workload=150 / time~=1s).
         await asyncio.sleep(1.0)
         return {"ok": True, "benchmark": True}
 
@@ -186,7 +184,7 @@ worker_config = WorkerConfig(
             # it to a free worker (or spins up a new one).
             max_queue_time=0.0,
             remote_function=reserve_worker,
-            workload_calculator=lambda _payload: 100.0,
+            workload_calculator=lambda _payload: 150.0,
             benchmark_config=BenchmarkConfig(
                 generator=lambda: {BENCHMARK_SENTINEL: True},
                 runs=1,
