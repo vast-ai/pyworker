@@ -135,14 +135,26 @@ authentication on it.
 
 ## Client example
 
+Single reservation:
+
 ```bash
 python -m workers.null.client --endpoint <ENDPOINT_NAME> --duration 600
 ```
 
-This POSTs once to `/reserve`, which causes exactly one worker to be
-provisioned (if none is free) and held busy. To exercise the full flow,
-shell into the worker and run `curl -X POST http://127.0.0.1:18999/release`
-— the client will return with `{"released": "explicit", ...}`.
+To exercise the full flow, shell into the worker and run
+`curl -X POST http://127.0.0.1:18999/release` — the client returns with
+`{"released": "explicit", ...}`.
+
+Staggered demo:
+
+```bash
+python -m workers.null.client --endpoint <ENDPOINT_NAME> --demo
+```
+
+Starts three reservations 30s apart (all held concurrently), waits another
+30s, then cancels the first by dropping its HTTP connection. The remaining
+two run until their duration cap. Useful for watching scale-up and
+scale-down behaviour in the autoscaler dashboard.
 
 ## Notes and caveats
 
