@@ -116,6 +116,13 @@ async def reserve_worker(**params: object) -> dict:
     global _active_reservation
 
     if params.get(BENCHMARK_SENTINEL):
+        # The framework computes max_throughput = workload / time during the
+        # startup benchmark. A null worker has no throughput concept (a
+        # reservation is a unitless slot), so we deliberately take ~1s with
+        # workload=1 to pin max_throughput to ~1.0. Without this the
+        # near-instant benchmark would report hundreds of thousands of
+        # workload/sec, distorting any downstream capacity math.
+        await asyncio.sleep(1.0)
         return {"ok": True, "benchmark": True}
 
     requested = params.get("duration")
@@ -166,7 +173,7 @@ worker_config = WorkerConfig(
             # it to a free worker (or spins up a new one).
             max_queue_time=0.0,
             remote_function=reserve_worker,
-            workload_calculator=lambda _payload: 100.0,
+            workload_calculator=lambda _payload: 1.0,
             benchmark_config=BenchmarkConfig(
                 generator=lambda: {BENCHMARK_SENTINEL: True},
                 runs=1,
