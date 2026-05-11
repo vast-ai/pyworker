@@ -88,6 +88,19 @@ def _build_internal_app() -> web.Application:
 
 @asynccontextmanager
 async def null_lifecycle():
+    # Pin max_throughput to exactly 100 by pre-populating the framework's
+    # benchmark cache file. The framework's __run_benchmark short-circuits
+    # to `float(file_contents)` when this file exists, bypassing the
+    # time-based calculation that would otherwise drift to ~99.x due to
+    # asyncio scheduling overhead. The filename matches the framework
+    # constant BENCHMARK_INDICATOR_FILE in
+    # vastai.serverless.server.lib.backend.
+    try:
+        with open(".has_benchmark", "w") as fh:
+            fh.write("100")
+    except OSError as e:
+        log.warning(f"Could not pin benchmark cache to 100: {e}")
+
     app = _build_internal_app()
     runner = web.AppRunner(app)
     await runner.setup()
