@@ -2,8 +2,9 @@
 
 A PyWorker that does **nothing** — it does not forward requests to any model
 server. Each HTTP POST to `/reserve` simply marks the worker as busy and holds
-the request open until the caller disconnects (or a configured timeout
-elapses).
+the request open until the user's queue consumer (running locally on the
+instance) calls `/release` on the internal control port — or a safety
+timeout elapses.
 
 ## When to use it
 
@@ -18,11 +19,12 @@ Use this worker when you want to drive Vast Serverless autoscaling but you do
   Serverless autoscaler to spin instances up and down based on demand on
   *your* side.
 
-For each job your side wants to run on a Vast instance, you POST once to
-`/reserve`. The autoscaler will provision a worker if none is free; the
-request stays open, keeping that worker counted as busy, until you close the
-connection. When you close, the worker goes idle and the autoscaler is free
-to scale it down.
+For each batch of work your side wants on a Vast instance, you POST once to
+`/reserve`. The autoscaler provisions a worker if none is free; the request
+stays open, keeping that worker counted as busy. When your queue consumer
+finishes its work it POSTs `/release` on `127.0.0.1:18999` and the held
+`/reserve` returns `200`, so the request is recorded as a normal success in
+Vast metrics (not a cancellation).
 
 ## How it works
 
@@ -33,19 +35,22 @@ to scale it down.
 - `lifecycle` is used instead of `model_log_file`, so there is no log to tail
   and no model server to start. The worker reports itself ready immediately
   after the (trivial) benchmark.
-- The handler is a `remote_function` rather than an HTTP proxy, so the
-  framework never tries to forward the request anywhere.
+- The `/reserve` handler is a `remote_function` rather than an HTTP proxy, so
+  the framework never tries to forward the request anywhere — it just awaits
+  an internal `asyncio.Event`.
+- An internal aiohttp control server, bound to `127.0.0.1`, hosts
+  `/release` (and, when no external healthcheck URL is provided, a stub
+  `/health`).
 
 ## Healthchecking
 
 The framework periodically GETs a healthcheck URL after startup; if it ever
 fails after the first success, the worker is marked errored and the
-autoscaler can decommission it. The null worker exposes two modes:
+autoscaler can decommission it. Two modes:
 
-- **Stub (default)** — a tiny HTTP server runs on
-  `http://127.0.0.1:18999/health` (override the port with
-  `NULL_STUB_HEALTH_PORT`) and always returns `200`. This is just enough to
-  satisfy the framework while you wire up real consumers.
+- **Stub (default)** — the internal control server also answers
+  `GET /health` with `200`. This is just enough to satisfy the framework
+  while you wire up real consumers.
 - **Point at your queue consumer (recommended)** — set
   `BACKEND_HEALTH_URL=http://127.0.0.1:9090/health` (absolute URL) and the
   pyworker will healthcheck *your* consumer instead. If your consumer
@@ -57,39 +62,60 @@ your template.
 
 ## API
 
-### `POST /reserve`
+### `POST /reserve`  (external port, signed by the autoscaler)
 
-Holds the worker busy for the lifetime of the request.
+Holds the worker busy until the reservation ends.
 
 Request body (all fields optional):
 
 ```json
-{ "duration": 60 }
+{ "duration": 600 }
 ```
 
-- `duration` (seconds, optional): how long to hold the reservation if the
-  client does not disconnect first. Capped by `MAX_RESERVATION_SECONDS` (env
-  var, default 3600). If omitted, defaults to the cap.
+- `duration` (seconds, optional): safety cap on how long to hold the
+  reservation if no `/release` arrives. Capped by `MAX_RESERVATION_SECONDS`
+  (env var, default 3600). If omitted, defaults to that cap.
 
 Behavior:
 
-- Returns `200` with `{"released": "duration_elapsed", "duration": <n>}` when
-  the duration elapses normally.
-- Returns `499` when the client disconnects (the reservation is released
-  immediately).
+- Returns `200` with `{"released": "explicit", ...}` when the local consumer
+  POSTs `/release` on the internal port. **This is the intended happy path
+  — the request is counted as a success in metrics.**
+- Returns `200` with `{"released": "duration_elapsed", "duration": <n>}` if
+  the duration cap fires (safety net for a stuck consumer).
+- Returns `499` if the external client disconnects (counted as cancelled in
+  metrics — avoid this; use `/release` instead).
 - Returns `429` if the worker is already busy and queue wait would exceed
   `max_queue_time` (30s by default).
+
+### `POST /release`  (internal port, localhost-only)
+
+Marks the active reservation as done. No body required. Idempotent:
+
+```bash
+curl -X POST http://127.0.0.1:18999/release
+```
+
+Responses:
+
+- `200 {"released": true}` — active reservation was released; the held
+  `/reserve` will return `{"released": "explicit"}`.
+- `200 {"released": false, "reason": "no active reservation"}` — nothing was
+  in flight, no-op.
+
+Only processes on the Vast instance can reach this port. There is no
+authentication on it.
 
 ## Environment variables
 
 - `MAX_RESERVATION_SECONDS` — upper bound on how long a single `/reserve`
-  call can hold a worker. Defaults to `3600`. Set lower if you want a tighter
-  safety cap against stuck clients.
+  call can hold a worker if `/release` is never called. Defaults to `3600`.
 - `BACKEND_HEALTH_URL` — absolute URL the framework should healthcheck
-  (e.g. `http://127.0.0.1:9090/health`). When set, the stub server does not
-  run. When unset, the built-in stub is used.
-- `NULL_STUB_HEALTH_PORT` — port for the built-in stub healthcheck server.
-  Defaults to `18999`. Only used when `BACKEND_HEALTH_URL` is unset.
+  (e.g. `http://127.0.0.1:9090/health`). When set, the stub `/health` route
+  is not registered on the internal server. When unset, the built-in stub
+  is used.
+- `NULL_CONTROL_PORT` — port for the internal control server (hosts
+  `/release` and optionally `/health`). Defaults to `18999`.
 
 ## Deploying on Vast Serverless
 
@@ -100,26 +126,35 @@ Behavior:
 3. There is no model server to configure; you can omit model-related env vars
    entirely.
 4. Run your own queue-consumer process on the instance alongside the
-   PyWorker (e.g. as a separate supervisor service started by the template).
+   PyWorker. When the consumer finishes its work it should:
+   ```bash
+   curl -X POST http://127.0.0.1:18999/release
+   ```
+   so the held `/reserve` returns success and the autoscaler can scale the
+   worker down cleanly.
 
 ## Client example
 
 ```bash
-python -m workers.null.client --endpoint <ENDPOINT_NAME> --duration 300
+python -m workers.null.client --endpoint <ENDPOINT_NAME> --duration 600
 ```
 
-This will POST once to `/reserve`, which causes exactly one worker to be
-provisioned (if none is free) and held busy for up to 300 seconds. Killing
-the client process (Ctrl-C) drops the connection and releases the worker
-early.
+This POSTs once to `/reserve`, which causes exactly one worker to be
+provisioned (if none is free) and held busy. To exercise the full flow,
+shell into the worker and run `curl -X POST http://127.0.0.1:18999/release`
+— the client will return with `{"released": "explicit", ...}`.
 
 ## Notes and caveats
 
-- The HTTP connection must stay open for the full reservation. Make sure
-  your client and any intermediate proxies allow long-lived requests
-  (disable idle timeouts, retries, and connection reuse if necessary).
+- The HTTP connection from the external caller must stay open for the full
+  reservation. Make sure your client and any intermediate proxies allow
+  long-lived requests (disable idle timeouts, retries, and connection
+  reuse if necessary).
 - If your client retries on timeout, you may end up provisioning duplicate
-  workers. Use idempotent semantics in *your* queue, or set `duration` to a
-  finite value and accept release-on-elapse as the normal exit.
+  workers. Configure `duration` generously and rely on `/release` from the
+  consumer to end reservations promptly.
+- Avoid disconnecting the external `/reserve` request as a way to release —
+  that produces a `499` and is counted as a cancellation in Vast metrics.
+  Always release via `POST /release` on the internal port.
 - There is no streaming / heartbeat in the response; the request returns
   exactly once, when the reservation ends.
