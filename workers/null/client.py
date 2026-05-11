@@ -50,46 +50,43 @@ async def run_demo(
     client: Serverless,
     *,
     endpoint_name: str,
-    duration: float,
     interval: float,
 ) -> None:
-    """Reserve, wait, reserve, wait, reserve, wait, cancel one.
+    """Trapezoidal load: ramp up three reservations, then let them scale down.
 
-    All three reservations run concurrently as separate held HTTP requests.
-    After all three are in flight, we cancel the first to demonstrate the
-    early-release path. The remaining two are left to run to their natural
-    duration cap (or you can ctrl-c to drop them).
+    Start three reservations spaced `interval` seconds apart, each with a
+    duration equal to 3 * interval. The staggered starts and identical
+    durations mean they end one at a time, also `interval` apart, so the
+    load curve ramps up over 2*interval, plateaus at 3 for `interval`, and
+    ramps down over 2*interval. Each reservation ends via its duration cap
+    (a 200 success, not a 499 cancellation).
     """
+    hold = interval * 3
     tasks: list[asyncio.Task] = []
     for i in range(1, 4):
         label = f"res-{i}"
+        log.info(
+            "[%s] starting (auto-release after %.0fs)", label, hold
+        )
         task = asyncio.create_task(
             reserve(
                 client,
                 endpoint_name=endpoint_name,
-                duration=duration,
+                duration=hold,
                 label=label,
             ),
             name=label,
         )
         tasks.append(task)
         if i < 3:
-            log.info("Waiting %.0fs before starting next reservation...", interval)
+            log.info("Waiting %.0fs before next reservation...", interval)
             await asyncio.sleep(interval)
 
     log.info(
-        "All 3 reservations in flight. Waiting %.0fs, then cancelling res-1...",
+        "All 3 reservations in flight; they will scale down %.0fs apart, "
+        "starting in %.0fs",
         interval,
-    )
-    await asyncio.sleep(interval)
-
-    log.info("Cancelling res-1 (drops the HTTP connection — produces a 499)")
-    tasks[0].cancel()
-
-    log.info(
-        "res-2 and res-3 left running. They will end at their duration cap "
-        "(%.0fs), or you can ctrl-c to drop them.",
-        duration,
+        hold - 2 * interval,
     )
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for task, result in zip(tasks, results):
@@ -144,7 +141,6 @@ async def main_async():
                 await run_demo(
                     client,
                     endpoint_name=args.endpoint,
-                    duration=args.duration,
                     interval=args.interval,
                 )
             else:

@@ -151,10 +151,11 @@ Staggered demo:
 python -m workers.null.client --endpoint <ENDPOINT_NAME> --demo
 ```
 
-Starts three reservations 30s apart (all held concurrently), waits another
-30s, then cancels the first by dropping its HTTP connection. The remaining
-two run until their duration cap. Useful for watching scale-up and
-scale-down behaviour in the autoscaler dashboard.
+Starts three reservations 30s apart (all held concurrently) with a 90s
+duration each. They scale down one at a time, also 30s apart, then the
+client exits — a clean trapezoidal load curve for watching scale-up and
+scale-down in the autoscaler dashboard. Each reservation ends via its
+duration cap (a 200 success in metrics).
 
 ## Notes and caveats
 
