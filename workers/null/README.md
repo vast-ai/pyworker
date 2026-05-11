@@ -36,6 +36,25 @@ to scale it down.
 - The handler is a `remote_function` rather than an HTTP proxy, so the
   framework never tries to forward the request anywhere.
 
+## Healthchecking
+
+The framework periodically GETs a healthcheck URL after startup; if it ever
+fails after the first success, the worker is marked errored and the
+autoscaler can decommission it. The null worker exposes two modes:
+
+- **Stub (default)** — a tiny HTTP server runs on
+  `http://127.0.0.1:18999/health` (override the port with
+  `NULL_STUB_HEALTH_PORT`) and always returns `200`. This is just enough to
+  satisfy the framework while you wire up real consumers.
+- **Point at your queue consumer (recommended)** — set
+  `BACKEND_HEALTH_URL=http://127.0.0.1:9090/health` (absolute URL) and the
+  pyworker will healthcheck *your* consumer instead. If your consumer
+  process crashes, the autoscaler will see the worker as broken.
+
+Run your queue consumer on the instance alongside the PyWorker, expose a
+plain `/health` endpoint on it, then set `BACKEND_HEALTH_URL` accordingly in
+your template.
+
 ## API
 
 ### `POST /reserve`
@@ -66,6 +85,11 @@ Behavior:
 - `MAX_RESERVATION_SECONDS` — upper bound on how long a single `/reserve`
   call can hold a worker. Defaults to `3600`. Set lower if you want a tighter
   safety cap against stuck clients.
+- `BACKEND_HEALTH_URL` — absolute URL the framework should healthcheck
+  (e.g. `http://127.0.0.1:9090/health`). When set, the stub server does not
+  run. When unset, the built-in stub is used.
+- `NULL_STUB_HEALTH_PORT` — port for the built-in stub healthcheck server.
+  Defaults to `18999`. Only used when `BACKEND_HEALTH_URL` is unset.
 
 ## Deploying on Vast Serverless
 
