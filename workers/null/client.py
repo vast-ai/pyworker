@@ -36,7 +36,7 @@ async def reserve(
     start = time.monotonic()
     log.info("[%s] POST /reserve duration=%ss", label, duration)
     try:
-        resp = await endpoint.request("/reserve", payload, cost=1)
+        resp = await endpoint.request("/reserve", payload, cost=100)
         elapsed = time.monotonic() - start
         log.info("[%s] returned after %.1fs: %s", label, elapsed, resp.get("response"))
         return resp["response"]
