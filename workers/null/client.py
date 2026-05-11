@@ -51,23 +51,24 @@ async def run_demo(
     *,
     endpoint_name: str,
     interval: float,
+    plateau: float,
 ) -> None:
-    """Trapezoidal load: ramp up three reservations, then let them scale down.
+    """Trapezoidal load: ramp up three reservations, plateau, then scale down.
 
-    Start three reservations spaced `interval` seconds apart, each with a
-    duration equal to 3 * interval. The staggered starts and identical
-    durations mean they end one at a time, also `interval` apart, so the
-    load curve ramps up over 2*interval, plateaus at 3 for `interval`, and
-    ramps down over 2*interval. Each reservation ends via its duration cap
-    (a 200 success, not a 499 cancellation).
+    Start three reservations spaced `interval` seconds apart. Pick the
+    duration so that the first release fires `plateau` seconds *after the
+    last reservation started*, giving the autoscaler time to actually have
+    all three workers running before any of them begin to scale down.
+    Releases then fire `interval` seconds apart, matching the ramp-up.
+
+    Each reservation ends via its duration cap (a 200 success).
     """
-    hold = interval * 3
+    n = 3
+    hold = (n - 1) * interval + plateau
     tasks: list[asyncio.Task] = []
-    for i in range(1, 4):
+    for i in range(1, n + 1):
         label = f"res-{i}"
-        log.info(
-            "[%s] starting (auto-release after %.0fs)", label, hold
-        )
+        log.info("[%s] starting (auto-release after %.0fs)", label, hold)
         task = asyncio.create_task(
             reserve(
                 client,
@@ -78,15 +79,16 @@ async def run_demo(
             name=label,
         )
         tasks.append(task)
-        if i < 3:
+        if i < n:
             log.info("Waiting %.0fs before next reservation...", interval)
             await asyncio.sleep(interval)
 
     log.info(
-        "All 3 reservations in flight; they will scale down %.0fs apart, "
-        "starting in %.0fs",
+        "All %d reservations in flight; holding plateau for %.0fs, "
+        "then scaling down %.0fs apart",
+        n,
+        plateau,
         interval,
-        hold - 2 * interval,
     )
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for task, result in zip(tasks, results):
@@ -125,6 +127,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=30.0,
         help="Demo mode: seconds between reservation steps (default: 30)",
     )
+    p.add_argument(
+        "--plateau",
+        type=float,
+        default=300.0,
+        help=(
+            "Demo mode: seconds to hold all 3 reservations active before "
+            "scale-down starts. Gives the autoscaler time to fully spin "
+            "up the third worker (default: 300)"
+        ),
+    )
     return p
 
 
@@ -142,6 +154,7 @@ async def main_async():
                     client,
                     endpoint_name=args.endpoint,
                     interval=args.interval,
+                    plateau=args.plateau,
                 )
             else:
                 response = await reserve(
