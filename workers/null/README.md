@@ -19,12 +19,12 @@ Use this worker when you want to drive Vast Serverless autoscaling but you do
   Serverless autoscaler to spin instances up and down based on demand on
   *your* side.
 
-For each batch of work your side wants on a Vast instance, you POST once to
-`/reserve`. The autoscaler provisions a worker if none is free; the request
-stays open, keeping that worker counted as busy. When your queue consumer
-finishes its work it POSTs `/release` on `127.0.0.1:18999` and the held
-`/reserve` returns `200`, so the request is recorded as a normal success in
-Vast metrics (not a cancellation).
+A request comes in and you get a worker. Release and it scales back down.
+
+POST to `/reserve` and serverless gives you a worker, held busy for the
+lifetime of the request. When your queue consumer is done, POST to
+`/release` on the internal port (`127.0.0.1:18999` by default) and the
+held `/reserve` returns `200`.
 
 ## How it works
 
