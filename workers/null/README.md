@@ -28,10 +28,10 @@ held `/reserve` returns `200`.
 
 ## How it works
 
-- `allow_parallel_requests=False`, so one in-flight `/reserve` fully occupies
-  the worker. Any second request that lands on the same worker queues (or is
-  rejected with `429` after `max_queue_time`), pushing the autoscaler to
-  provision more workers.
+- `allow_parallel_requests=False` and `max_queue_time=0.0`, so one in-flight
+  `/reserve` fully occupies the worker and any further request that lands
+  on it is rejected with `429` immediately — serverless will route to a
+  free worker or scale a new one up.
 - `lifecycle` is used instead of `model_log_file`, so there is no log to tail
   and no model server to start. The worker reports itself ready immediately
   after the (trivial) benchmark.
@@ -85,8 +85,8 @@ Behavior:
   the duration cap fires (safety net for a stuck consumer).
 - Returns `499` if the external client disconnects (counted as cancelled in
   metrics — avoid this; use `/release` instead).
-- Returns `429` if the worker is already busy and queue wait would exceed
-  `max_queue_time` (30s by default).
+- Returns `429` immediately if the worker is already holding a reservation
+  (so serverless routes the request to a free worker instead of queueing).
 
 ### `POST /release`  (internal port, localhost-only)
 

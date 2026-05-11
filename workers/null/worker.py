@@ -159,7 +159,12 @@ worker_config = WorkerConfig(
         HandlerConfig(
             route="/reserve",
             allow_parallel_requests=False,
-            max_queue_time=30.0,
+            # Reject (429) any /reserve that arrives while the worker is
+            # already busy. A held reservation lasts up to MAX_RESERVATION_
+            # SECONDS, so queueing behind it would mean hours of wait —
+            # better to bounce the request immediately so serverless routes
+            # it to a free worker (or spins up a new one).
+            max_queue_time=0.0,
             remote_function=reserve_worker,
             workload_calculator=lambda _payload: 100.0,
             benchmark_config=BenchmarkConfig(
