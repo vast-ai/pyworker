@@ -15,7 +15,12 @@ logging.basicConfig(
 log = logging.getLogger(__file__)
 
 ENDPOINT_NAME = "null-prod"
-SESSION_COST = 100
+# Default cost passed to /session/create. Bumping this above the worker's
+# max_perf (100) is how you tell the autoscaler "each session is more than
+# one worker of work" — keeps an extra active worker warm and ready, so
+# the next /session/create lands on a free worker instead of queueing.
+# See README "Endpoint scaling parameters" for the math.
+DEFAULT_SESSION_COST = 200
 
 
 async def reserve(
@@ -23,6 +28,7 @@ async def reserve(
     *,
     endpoint_name: str,
     hold_for: float,
+    session_cost: int,
     label: str = "session",
 ) -> None:
     """Open a session, hold the worker for `hold_for` seconds, close cleanly.
@@ -39,8 +45,11 @@ async def reserve(
     # don't make any keepalive requests so no extension happens.
     lifetime = hold_for + 60
     start = time.monotonic()
-    log.info("[%s] creating session (lifetime=%.0fs, hold=%.0fs)", label, lifetime, hold_for)
-    async with await endpoint.session(cost=SESSION_COST, lifetime=lifetime) as s:
+    log.info(
+        "[%s] creating session (cost=%d, lifetime=%.0fs, hold=%.0fs)",
+        label, session_cost, lifetime, hold_for,
+    )
+    async with await endpoint.session(cost=session_cost, lifetime=lifetime) as s:
         log.info("[%s] session %s open", label, s.session_id)
         try:
             await asyncio.sleep(hold_for)
@@ -59,6 +68,7 @@ async def run_demo(
     endpoint_name: str,
     interval: float,
     plateau: float,
+    session_cost: int,
 ) -> None:
     """Trapezoidal load: ramp up three sessions, plateau, then scale down.
 
@@ -84,6 +94,7 @@ async def run_demo(
                 client,
                 endpoint_name=endpoint_name,
                 hold_for=hold,
+                session_cost=session_cost,
                 label=label,
             ),
             name=label,
@@ -147,6 +158,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "up the third worker (default: 300)"
         ),
     )
+    p.add_argument(
+        "--session-cost",
+        type=int,
+        default=DEFAULT_SESSION_COST,
+        help=(
+            f"Cost reported to the autoscaler for each /session/create. "
+            f"Setting this above the worker's max_perf (100) over-provisions "
+            f"slightly, keeping an extra active worker warm so the next "
+            f"session lands without queueing (default: {DEFAULT_SESSION_COST})"
+        ),
+    )
     return p
 
 
@@ -165,12 +187,14 @@ async def main_async():
                     endpoint_name=args.endpoint,
                     interval=args.interval,
                     plateau=args.plateau,
+                    session_cost=args.session_cost,
                 )
             else:
                 await reserve(
                     client,
                     endpoint_name=args.endpoint,
                     hold_for=args.duration,
+                    session_cost=args.session_cost,
                     label="reservation",
                 )
     except KeyboardInterrupt:

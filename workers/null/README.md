@@ -144,6 +144,18 @@ session of `cost = 100`. Set the endpoint accordingly:
   `target_util = 1.0`).
 - **`max_workers`** — cap on total reservations the endpoint can ever
   serve concurrently.
+- **Session `cost = 2 × max_perf`** (e.g. `200` when `max_perf = 100`) —
+  recommended. Reporting `cost = max_perf` puts each occupied worker at
+  exactly 100% utilization, which the autoscaler reads as "at target,
+  no action needed." The third reservation then gets 429'd by both
+  occupied workers and stalls in the autoscaler's global queue
+  indefinitely instead of activating a cold worker.
+
+  Bumping `cost` above `max_perf` makes each session look like more than
+  one worker of work (`cur_load / max_perf > 1.0`), so the autoscaler
+  keeps an extra active worker hot per session. Slight over-provisioning
+  in exchange for predictable scale-up. The demo client defaults to
+  `--session-cost 200`.
 - **`max_queue_time = 0`** (or very small, e.g. `0.1`) — required.
   The per-worker `wait_time` property used internally to reject
   requests filters sessions out, but the **autoscaler** computes its
