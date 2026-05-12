@@ -169,6 +169,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
             f"session lands without queueing (default: {DEFAULT_SESSION_COST})"
         ),
     )
+    p.add_argument(
+        "--instance",
+        choices=("prod", "alpha", "candidate", "local"),
+        default=os.environ.get("VAST_INSTANCE", "prod"),
+        help="Vast serverless instance to target (default: prod)",
+    )
     return p
 
 
@@ -176,11 +182,11 @@ async def main_async():
     args = build_arg_parser().parse_args()
 
     print("=" * 60)
-    print(f"Endpoint: {args.endpoint}")
+    print(f"Endpoint: {args.endpoint}  (instance: {args.instance})")
     print("=" * 60)
 
     try:
-        async with Serverless() as client:
+        async with Serverless(instance=args.instance) as client:
             if args.demo:
                 await run_demo(
                     client,
