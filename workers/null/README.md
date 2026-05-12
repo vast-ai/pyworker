@@ -68,17 +68,18 @@ consumer dies, the autoscaler sees the worker as broken.
 ## Client demo
 
 ```bash
-# Single reservation
+# Single reservation, hold 180s
 python -m workers.null.client --endpoint <NAME> --instance alpha
 
-# Staggered three-session trapezoid
-python -m workers.null.client --endpoint <NAME> --instance alpha --demo
+# Three concurrent reservations, started 30s apart, each held 360s
+python -m workers.null.client --endpoint <NAME> --instance alpha --count 3 --hold 360
 ```
 
-Flags: `--duration` (single), `--interval` and `--plateau` (demo
-timing), `--session-cost` (overrides the cost reported at session
-create; default 100 = `max_perf`), `--instance` (`prod` | `alpha` |
-`candidate` | `local`).
+Flags: `--count` (number of concurrent sessions, default 1), `--hold`
+(seconds each session is held, default 180), `--interval` (seconds
+between starts when `--count > 1`, default 30), `--cost` (cost reported
+at session-create, default 100 = `max_perf`), `--instance` (`prod` |
+`alpha` | `candidate` | `local`).
 
 ## Environment variables
 
