@@ -130,6 +130,30 @@ authenticated release path.
    curl -X POST http://127.0.0.1:18999/release
    ```
 
+### Endpoint scaling parameters
+
+The null worker reports `max_perf = 100` and each reservation is a
+session of `cost = 100`. Set the endpoint accordingly:
+
+- **`target_util = 1.0`** — required. The default of `0.9` reserves
+  ~11% spare capacity, which for a unit-occupancy worker rounds up to a
+  whole extra worker (e.g. `min_load = 100` becomes `100 / 0.9 = 111.1`
+  → 2 active workers instead of 1). With `target_util = 1.0` the math
+  is clean: `min_load = 100 * N` keeps exactly `N` workers active.
+- **`min_load`** — set to `100 * N` for `N` always-on workers (with
+  `target_util = 1.0`).
+- **`max_workers`** — cap on total reservations the endpoint can ever
+  serve concurrently.
+- **`max_queue_time` / `target_queue_time`** — leave at defaults. Both
+  operate on per-worker `wait_time`, which is computed *excluding*
+  sessions (`backend.py:510`, `data_types.py:307-317`), so a worker
+  holding a reservation reports `wait_time = 0.0`. Tuning these does
+  not change null-worker scaling — additional reservations land or
+  miss based on the `max_sessions = 1` rejection (429), not queue
+  time.
+- **`inactivity_timeout`** — works as expected: idle (no active
+  sessions) for N seconds → permitted to scale down past `min_load`.
+
 ## Client example
 
 Single reservation (holds for 180s):
