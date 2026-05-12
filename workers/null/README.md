@@ -1,10 +1,8 @@
 # Null PyWorker
 
 A PyWorker that does **nothing** — it does not forward requests to any model
-server. Each HTTP POST to `/reserve` simply marks the worker as busy and holds
-the request open until the user's queue consumer (running locally on the
-instance) calls `/release` on the internal control port — or a safety
-timeout elapses.
+server. Reservations are modelled as framework **sessions**: a request
+comes in and you get a worker; release and it scales back down.
 
 ## When to use it
 
@@ -15,32 +13,29 @@ Use this worker when you want to drive Vast Serverless autoscaling but you do
   etc.).
 - A separate worker process on the Vast instance pulls work from that queue
   directly. The Vast PyWorker is not involved in the request/response path.
+  Your consumer can be any language — node, golang, python, a binary —
+  this PyWorker is implementation-agnostic.
 - You want one Vast worker per active queue consumer, and you want the
   Serverless autoscaler to spin instances up and down based on demand on
   *your* side.
 
-A request comes in and you get a worker. Release and it scales back down.
-
-POST to `/reserve` and serverless gives you a worker, held busy for the
-lifetime of the request. When your queue consumer is done, POST to
-`/release` on the internal port (`127.0.0.1:18999` by default) and the
-held `/reserve` returns `200`.
-
 ## How it works
 
-- `allow_parallel_requests=False` and `max_queue_time=0.0`, so one in-flight
-  `/reserve` fully occupies the worker and any further request that lands
-  on it is rejected with `429` immediately — serverless will route to a
-  free worker or scale a new one up.
-- `lifecycle` is used instead of `model_log_file`, so there is no log to tail
-  and no model server to start. The worker reports itself ready immediately
-  after the (trivial) benchmark.
-- The `/reserve` handler is a `remote_function` rather than an HTTP proxy, so
-  the framework never tries to forward the request anywhere — it just awaits
-  an internal `asyncio.Event`.
-- An internal aiohttp control server, bound to `127.0.0.1`, hosts
-  `/release` (and, when no external healthcheck URL is provided, a stub
-  `/health`).
+- Reservations use the framework's **session** model. The SDK exposes
+  `endpoint.session(cost, lifetime)` which POSTs to `/session/create` (a
+  built-in framework route) and returns a `Session` object usable as
+  `async with`. Closing the context (or calling `await session.close()`)
+  POSTs to `/session/end` — counted as a normal success in metrics.
+- `max_sessions=1` on the worker side means a second `/session/create`
+  against an already-occupied worker returns `429`. Serverless routes
+  that request to a free worker or scales a new one up.
+- Sessions are **excluded from queue-wait math** (the framework filters
+  `if not request.is_session`), so an occupied worker doesn't look like
+  it has a request queue piling up. The autoscaler treats a session as
+  occupancy, not as work-in-progress.
+- `lifecycle` is used instead of `model_log_file`, so there is no log to
+  tail and no model server to start. The worker reports itself ready
+  immediately after a trivial benchmark.
 
 ## Healthchecking
 
@@ -49,48 +44,52 @@ fails after the first success, the worker is marked errored and the
 autoscaler can decommission it. Two modes:
 
 - **Stub (default)** — the internal control server also answers
-  `GET /health` with `200`. This is just enough to satisfy the framework
-  while you wire up real consumers.
+  `GET /health` with `200`. Just enough to satisfy the framework while
+  you wire up real consumers.
 - **Point at your queue consumer (recommended)** — set
-  `BACKEND_HEALTH_URL=http://127.0.0.1:9090/health` (absolute URL) and the
-  pyworker will healthcheck *your* consumer instead. If your consumer
+  `BACKEND_HEALTH_URL=http://127.0.0.1:9090/health` (absolute URL) and
+  the pyworker will healthcheck *your* consumer instead. If the consumer
   process crashes, the autoscaler will see the worker as broken.
-
-Run your queue consumer on the instance alongside the PyWorker, expose a
-plain `/health` endpoint on it, then set `BACKEND_HEALTH_URL` accordingly in
-your template.
 
 ## API
 
-### `POST /reserve`  (external port, signed by the autoscaler)
+### Reservation: `POST /session/create`  (external, signed)
 
-Holds the worker busy until the reservation ends.
+Not implemented here — the framework provides this route automatically on
+every PyWorker. Use the SDK:
 
-Request body (all fields optional):
+```python
+from vastai import Serverless
 
-```json
-{ "duration": 600 }
+async with Serverless() as client:
+    endpoint = await client.get_endpoint(name="my-null-endpoint")
+    async with endpoint.session(cost=100, lifetime=600) as s:
+        # Worker is now reserved. Your queue dispatcher does whatever it
+        # needs to do (typically: enqueue a job that mentions s.session_id).
+        ...
+    # `async with` exit posts to /session/end → 200 success in metrics
 ```
 
-- `duration` (seconds, optional): safety cap on how long to hold the
-  reservation if no `/release` arrives. Capped by `MAX_RESERVATION_SECONDS`
-  (env var, default 3600). If omitted, defaults to that cap.
+Or raw HTTP (the SDK takes care of autoscaler signing for you, but the
+shape of the request is documented for non-Python clients):
 
-Behavior:
+```
+POST /session/create
+{
+  "auth_data": { /* signed by autoscaler */ },
+  "payload": {
+    "lifetime": 600,
+    "on_close_route": "https://your.callback/notify",
+    "on_close_payload": {"job_id": "..."}
+  }
+}
+```
 
-- Returns `200` with `{"released": "explicit", ...}` when the local consumer
-  POSTs `/release` on the internal port. **This is the intended happy path
-  — the request is counted as a success in metrics.**
-- Returns `200` with `{"released": "duration_elapsed", "duration": <n>}` if
-  the duration cap fires (safety net for a stuck consumer).
-- Returns `499` if the external client disconnects (counted as cancelled in
-  metrics — avoid this; use `/release` instead).
-- Returns `429` immediately if the worker is already holding a reservation
-  (so serverless routes the request to a free worker instead of queueing).
+### Release from a local consumer: `POST /release`  (internal, localhost-only)
 
-### `POST /release`  (internal port, localhost-only)
-
-Marks the active reservation as done. No body required. Idempotent:
+Closes the active session, regardless of who created it. No body, no
+auth. Use this when the queue consumer doesn't have (and shouldn't need)
+the session's `session_auth`:
 
 ```bash
 curl -X POST http://127.0.0.1:18999/release
@@ -98,52 +97,46 @@ curl -X POST http://127.0.0.1:18999/release
 
 Responses:
 
-- `200 {"released": true}` — active reservation was released; the held
-  `/reserve` will return `{"released": "explicit"}`.
-- `200 {"released": false, "reason": "no active reservation"}` — nothing was
-  in flight, no-op.
+- `200 {"released": true, "session_ids": ["..."]}` — closed; the held
+  client-side `/session/create` completes and counts as a success.
+- `200 {"released": false, "reason": "no active session"}` — nothing
+  active, no-op.
 
-Only processes on the Vast instance can reach this port. There is no
-authentication on it.
+For setups where the dispatcher can hand the consumer `session_auth`
+(e.g. as part of the queue payload), the consumer can instead POST
+`/session/end` on the framework's HTTP-only port
+(`$WORKER_HTTP_PORT`, default `WORKER_PORT+1`) — the standard, fully
+authenticated release path.
 
 ## Environment variables
 
-- `MAX_RESERVATION_SECONDS` — upper bound on how long a single `/reserve`
-  call can hold a worker if `/release` is never called. Defaults to `3600`.
 - `BACKEND_HEALTH_URL` — absolute URL the framework should healthcheck
-  (e.g. `http://127.0.0.1:9090/health`). When set, the stub `/health` route
-  is not registered on the internal server. When unset, the built-in stub
-  is used.
+  (e.g. `http://127.0.0.1:9090/health`). When set, the stub `/health`
+  route is not registered on the internal server.
 - `NULL_CONTROL_PORT` — port for the internal control server (hosts
   `/release` and optionally `/health`). Defaults to `18999`.
 
 ## Deploying on Vast Serverless
 
-1. Create a Serverless endpoint and point `PYWORKER_REPO` at this repository
-   (or your fork).
+1. Create a Serverless endpoint and point `PYWORKER_REPO` at this
+   repository (or your fork).
 2. Set `BACKEND=null` in the template so `start_server.sh` runs
    `workers.null.worker`.
-3. There is no model server to configure; you can omit model-related env vars
-   entirely.
+3. There is no model server to configure; you can omit model-related env
+   vars entirely.
 4. Run your own queue-consumer process on the instance alongside the
-   PyWorker. When the consumer finishes its work it should:
+   PyWorker. When it finishes its work:
    ```bash
    curl -X POST http://127.0.0.1:18999/release
    ```
-   so the held `/reserve` returns success and the autoscaler can scale the
-   worker down cleanly.
 
 ## Client example
 
-Single reservation:
+Single reservation (holds for 180s):
 
 ```bash
-python -m workers.null.client --endpoint <ENDPOINT_NAME> --duration 600
+python -m workers.null.client --endpoint <ENDPOINT_NAME>
 ```
-
-To exercise the full flow, shell into the worker and run
-`curl -X POST http://127.0.0.1:18999/release` — the client returns with
-`{"released": "explicit", ...}`.
 
 Staggered demo:
 
@@ -151,25 +144,28 @@ Staggered demo:
 python -m workers.null.client --endpoint <ENDPOINT_NAME> --demo
 ```
 
-Starts three reservations 30s apart (all held concurrently), holds the
+Starts three sessions 30s apart (all held concurrently), holds the
 3-worker plateau for 5 minutes so the autoscaler has time to actually
-provision the third worker before any scale-down starts, then scales
-down one worker at a time, also 30s apart, and exits.
+provision the third worker before any scale-down starts, then closes
+the sessions one at a time, also 30s apart, and exits. Every session
+ends cleanly via the SDK's `session.close()` — `200` successes in
+metrics, no cancellations.
 
-Each reservation ends via its duration cap (a 200 success in metrics).
-Tune the timing with `--interval` and `--plateau`.
+Tune the timing with `--interval` and `--plateau`. To exercise the
+local-release path, shell into a worker and run
+`curl -X POST http://127.0.0.1:18999/release`.
 
 ## Notes and caveats
 
-- The HTTP connection from the external caller must stay open for the full
-  reservation. Make sure your client and any intermediate proxies allow
-  long-lived requests (disable idle timeouts, retries, and connection
-  reuse if necessary).
-- If your client retries on timeout, you may end up provisioning duplicate
-  workers. Configure `duration` generously and rely on `/release` from the
-  consumer to end reservations promptly.
-- Avoid disconnecting the external `/reserve` request as a way to release —
-  that produces a `499` and is counted as a cancellation in Vast metrics.
-  Always release via `POST /release` on the internal port.
-- There is no streaming / heartbeat in the response; the request returns
-  exactly once, when the reservation ends.
+- The reservation's lifetime caps how long the session can live without
+  client activity. Set it comfortably longer than the work you expect to
+  do, or have the client periodically POST `/ping` with `session_id` to
+  extend.
+- The `on_close_route` payload (passed at `/session/create`) is POSTed by
+  the framework when the session ends. Useful for notifying your queue
+  consumer that the reservation is closing.
+- `/release` on the internal port is convenient but bypasses
+  `session_auth`. If you need the standard authenticated release flow,
+  pass `session_auth` to your consumer (e.g. through the queue payload)
+  and have it POST to `/session/end` on the framework's HTTP port
+  instead.

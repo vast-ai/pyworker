@@ -15,35 +15,42 @@ logging.basicConfig(
 log = logging.getLogger(__file__)
 
 ENDPOINT_NAME = "null-prod"
+SESSION_COST = 100
 
 
 async def reserve(
     client: Serverless,
     *,
     endpoint_name: str,
-    duration: float,
-    label: str = "reservation",
-) -> dict:
-    """Hold a Vast worker open for `duration` seconds (or until we disconnect).
+    hold_for: float,
+    label: str = "session",
+) -> None:
+    """Open a session, hold the worker for `hold_for` seconds, close cleanly.
 
-    The worker counts itself busy for the lifetime of this call. Returning
-    here means the reservation has ended — either /release was called on
-    the worker's internal control port, or the duration cap fired, or the
-    HTTP request was cancelled.
+    Uses the framework's session model — each session counts as one worker
+    occupied, but unlike a held HTTP request it isn't poisoning the
+    worker's throughput math. max_sessions=1 on the worker side means a
+    second /session/create against the same worker gets 429, so serverless
+    routes the second reservation to a free worker or scales a new one up.
     """
     endpoint = await client.get_endpoint(name=endpoint_name)
-    payload = {"duration": duration}
+    # Session lifetime must outlast the hold. The framework expires sessions
+    # whose `expiration` (set to now + lifetime at creation) has passed; we
+    # don't make any keepalive requests so no extension happens.
+    lifetime = hold_for + 60
     start = time.monotonic()
-    log.info("[%s] POST /reserve duration=%ss", label, duration)
-    try:
-        resp = await endpoint.request("/reserve", payload, cost=150)
-        elapsed = time.monotonic() - start
-        log.info("[%s] returned after %.1fs: %s", label, elapsed, resp.get("response"))
-        return resp["response"]
-    except asyncio.CancelledError:
-        elapsed = time.monotonic() - start
-        log.info("[%s] cancelled after %.1fs (HTTP connection dropped)", label, elapsed)
-        raise
+    log.info("[%s] creating session (lifetime=%.0fs, hold=%.0fs)", label, lifetime, hold_for)
+    async with endpoint.session(cost=SESSION_COST, lifetime=lifetime) as s:
+        log.info("[%s] session %s open", label, s.session_id)
+        try:
+            await asyncio.sleep(hold_for)
+            log.info("[%s] hold complete, closing session", label)
+        except asyncio.CancelledError:
+            elapsed = time.monotonic() - start
+            log.info("[%s] cancelled after %.1fs, closing session", label, elapsed)
+            raise
+    elapsed = time.monotonic() - start
+    log.info("[%s] session closed cleanly after %.1fs", label, elapsed)
 
 
 async def run_demo(
@@ -53,38 +60,41 @@ async def run_demo(
     interval: float,
     plateau: float,
 ) -> None:
-    """Trapezoidal load: ramp up three reservations, plateau, then scale down.
+    """Trapezoidal load: ramp up three sessions, plateau, then scale down.
 
-    Start three reservations spaced `interval` seconds apart. Pick the
-    duration so that the first release fires `plateau` seconds *after the
-    last reservation started*, giving the autoscaler time to actually have
-    all three workers running before any of them begin to scale down.
-    Releases then fire `interval` seconds apart, matching the ramp-up.
+    Start three sessions spaced `interval` seconds apart. Each holds for
+    `(n-1)*interval + plateau` seconds, so the first release fires
+    `plateau` seconds after the last session started — giving the
+    autoscaler time to actually have all three workers running before any
+    scale-down begins. Releases then fire `interval` seconds apart,
+    matching the ramp-up.
 
-    Each reservation ends via its duration cap (a 200 success).
+    Each session ends via the SDK's `session.close()` on `async with` exit,
+    which posts to /session/end with proper auth — counted as a normal
+    success in metrics.
     """
     n = 3
     hold = (n - 1) * interval + plateau
     tasks: list[asyncio.Task] = []
     for i in range(1, n + 1):
         label = f"res-{i}"
-        log.info("[%s] starting (auto-release after %.0fs)", label, hold)
+        log.info("[%s] starting (hold=%.0fs)", label, hold)
         task = asyncio.create_task(
             reserve(
                 client,
                 endpoint_name=endpoint_name,
-                duration=hold,
+                hold_for=hold,
                 label=label,
             ),
             name=label,
         )
         tasks.append(task)
         if i < n:
-            log.info("Waiting %.0fs before next reservation...", interval)
+            log.info("Waiting %.0fs before next session...", interval)
             await asyncio.sleep(interval)
 
     log.info(
-        "All %d reservations in flight; holding plateau for %.0fs, "
+        "All %d sessions in flight; holding plateau for %.0fs, "
         "then scaling down %.0fs apart",
         n,
         plateau,
@@ -106,19 +116,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--duration",
         type=float,
         default=180.0,
-        help="Seconds to hold each worker busy (default: 180)",
+        help="Single-reserve mode: seconds to hold the worker (default: 180)",
     )
 
     modes = p.add_mutually_exclusive_group(required=False)
     modes.add_argument(
         "--reserve",
         action="store_true",
-        help="Make a single /reserve call (default if no mode given)",
+        help="Make a single session (default if no mode given)",
     )
     modes.add_argument(
         "--demo",
         action="store_true",
-        help="Run the staggered 3-reservation demo, cancelling one mid-way",
+        help="Run the staggered 3-reservation trapezoid demo",
     )
 
     p.add_argument(
@@ -157,15 +167,14 @@ async def main_async():
                     plateau=args.plateau,
                 )
             else:
-                response = await reserve(
+                await reserve(
                     client,
                     endpoint_name=args.endpoint,
-                    duration=args.duration,
+                    hold_for=args.duration,
                     label="reservation",
                 )
-                print(f"Reservation result: {response}")
     except KeyboardInterrupt:
-        log.info("Interrupted; dropping any in-flight reservations")
+        log.info("Interrupted; dropping any in-flight sessions")
     except Exception as e:
         log.error("Error: %s", e, exc_info=True)
         sys.exit(1)
