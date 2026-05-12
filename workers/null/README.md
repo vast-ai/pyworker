@@ -1,225 +1,87 @@
 # Null PyWorker
 
-A PyWorker that does **nothing** — it does not forward requests to any model
-server. Reservations are modelled as framework **sessions**: a request
-comes in and you get a worker; release and it scales back down.
+Holds Vast Serverless reservations open without forwarding any work to a
+model. Use it when your real workload (a queue consumer in any language)
+runs as a separate process on the instance and you just want to drive
+Vast autoscaling: **one POST reserves a worker, one POST releases it.**
 
-## When to use it
+## Use case
 
-Use this worker when you want to drive Vast Serverless autoscaling but you do
-**not** want inbound requests to reach a model on the instance. Typical setup:
-
-- You already have a job queue on your own infrastructure (Redis, SQS, NATS,
-  etc.).
-- A separate worker process on the Vast instance pulls work from that queue
-  directly. The Vast PyWorker is not involved in the request/response path.
-  Your consumer can be any language — node, golang, python, a binary —
-  this PyWorker is implementation-agnostic.
-- You want one Vast worker per active queue consumer, and you want the
-  Serverless autoscaler to spin instances up and down based on demand on
-  *your* side.
+You have a job queue on your own infrastructure (Redis, SQS, NATS, etc.)
+and a consumer (node, golang, python, a binary — anything) that pulls
+from it. You want one Vast worker per unit of in-flight work, scaling
+elastically from zero. The null PyWorker is the autoscaling driver; your
+consumer does the work.
 
 ## How it works
 
-- Reservations use the framework's **session** model. The SDK exposes
-  `endpoint.session(cost, lifetime)` which POSTs to `/session/create` (a
-  built-in framework route) and returns a `Session` object usable as
-  `async with`. Closing the context (or calling `await session.close()`)
-  POSTs to `/session/end` — counted as a normal success in metrics.
-- `max_sessions=1` on the worker side means a second `/session/create`
-  against an already-occupied worker returns `429`. Serverless routes
-  that request to a free worker or scales a new one up.
-- Sessions are **excluded from queue-wait math** (the framework filters
-  `if not request.is_session`), so an occupied worker doesn't look like
-  it has a request queue piling up. The autoscaler treats a session as
-  occupancy, not as work-in-progress.
-- `lifecycle` is used instead of `model_log_file`, so there is no log to
-  tail and no model server to start. The worker reports itself ready
-  immediately after a trivial benchmark.
+Reservations use the framework's session API. The SDK's
+`endpoint.session(...)` POSTs `/session/create` to reserve a worker;
+`session.close()` POSTs `/session/end` to release it. `max_sessions=1`
+means each worker holds exactly one reservation — the next reservation
+either lands on a free worker or triggers a scale-up.
 
-## Healthchecking
+The PyWorker itself does nothing functional:
 
-The framework periodically GETs a healthcheck URL after startup; if it ever
-fails after the first success, the worker is marked errored and the
-autoscaler can decommission it. Two modes:
+- One trivial `/ping` route to satisfy the framework's benchmark
+  requirement (its `max_perf` is pinned to 100).
+- An internal `/release` endpoint on `127.0.0.1:18999` for the local
+  consumer to end the session without needing `session_auth`.
 
-- **Stub (default)** — the internal control server also answers
-  `GET /health` with `200`. Just enough to satisfy the framework while
-  you wire up real consumers.
-- **Point at your queue consumer (recommended)** — set
-  `BACKEND_HEALTH_URL=http://127.0.0.1:9090/health` (absolute URL) and
-  the pyworker will healthcheck *your* consumer instead. If the consumer
-  process crashes, the autoscaler will see the worker as broken.
+## Endpoint parameters
+
+Tested working configuration:
+
+| Parameter | Value | Why |
+|---|---|---|
+| `target_util` | `1.0` | One session = one worker. Default `0.9` rounds up to an extra worker. |
+| `min_load` | `0` | Scale-to-zero floor. |
+| `max_queue_time` | `1` | Stop routing to an occupied worker after ~1s of implied queue. |
+| `target_queue_time` | `0.5` | Trigger scale-up promptly once anything queues. |
+| `inactivity_timeout` | `10` (seconds) | Permit scale-to-zero after 10s idle. |
 
 ## API
 
-### Reservation: `POST /session/create`  (external, signed)
+| Route | Where | Use |
+|---|---|---|
+| `POST /session/create` | endpoint, signed | Reserve a worker (`endpoint.session(...)`) |
+| `POST /session/end` | endpoint, signed | Release (`session.close()`) |
+| `POST /release` | `127.0.0.1:18999`, no auth | Local consumer release, no `session_auth` needed |
 
-Not implemented here — the framework provides this route automatically on
-every PyWorker. Use the SDK:
+## Healthcheck
 
-```python
-from vastai import Serverless
+Default: stub on `127.0.0.1:18999/health` returning `200`. Set
+`BACKEND_HEALTH_URL=http://127.0.0.1:9090/health` (absolute URL) to point
+the framework at your queue consumer's health endpoint instead — if the
+consumer dies, the autoscaler sees the worker as broken.
 
-async with Serverless() as client:
-    endpoint = await client.get_endpoint(name="my-null-endpoint")
-    async with endpoint.session(cost=100, lifetime=600) as s:
-        # Worker is now reserved. Your queue dispatcher does whatever it
-        # needs to do (typically: enqueue a job that mentions s.session_id).
-        ...
-    # `async with` exit posts to /session/end → 200 success in metrics
-```
+## Deploying
 
-Or raw HTTP (the SDK takes care of autoscaler signing for you, but the
-shape of the request is documented for non-Python clients):
-
-```
-POST /session/create
-{
-  "auth_data": { /* signed by autoscaler */ },
-  "payload": {
-    "lifetime": 600,
-    "on_close_route": "https://your.callback/notify",
-    "on_close_payload": {"job_id": "..."}
-  }
-}
-```
-
-### Release from a local consumer: `POST /release`  (internal, localhost-only)
-
-Closes the active session, regardless of who created it. No body, no
-auth. Use this when the queue consumer doesn't have (and shouldn't need)
-the session's `session_auth`:
-
-```bash
-curl -X POST http://127.0.0.1:18999/release
-```
-
-Responses:
-
-- `200 {"released": true, "session_ids": ["..."]}` — closed; the held
-  client-side `/session/create` completes and counts as a success.
-- `200 {"released": false, "reason": "no active session"}` — nothing
-  active, no-op.
-
-For setups where the dispatcher can hand the consumer `session_auth`
-(e.g. as part of the queue payload), the consumer can instead POST
-`/session/end` on the framework's HTTP-only port
-(`$WORKER_HTTP_PORT`, default `WORKER_PORT+1`) — the standard, fully
-authenticated release path.
-
-## Environment variables
-
-- `BACKEND_HEALTH_URL` — absolute URL the framework should healthcheck
-  (e.g. `http://127.0.0.1:9090/health`). When set, the stub `/health`
-  route is not registered on the internal server.
-- `NULL_CONTROL_PORT` — port for the internal control server (hosts
-  `/release` and optionally `/health`). Defaults to `18999`.
-
-## Deploying on Vast Serverless
-
-1. Create a Serverless endpoint and point `PYWORKER_REPO` at this
-   repository (or your fork).
-2. Set `BACKEND=null` in the template so `start_server.sh` runs
-   `workers.null.worker`.
-3. There is no model server to configure; you can omit model-related env
-   vars entirely.
-4. Run your own queue-consumer process on the instance alongside the
-   PyWorker. When it finishes its work:
+1. Point `PYWORKER_REPO` at this repo (or your fork).
+2. Set `BACKEND=null` in the template.
+3. Run your queue consumer alongside the PyWorker. When it's done with
+   a unit of work:
    ```bash
    curl -X POST http://127.0.0.1:18999/release
    ```
 
-### Endpoint scaling parameters
-
-The null worker reports `max_perf = 100` and each reservation is a
-session of `cost = 100`. The intended model is **one session = one
-worker**, scaling elastically from zero up to as many concurrent
-sessions as you ask for.
-
-- **`target_util = 1.0`** — required. The default of `0.9` reserves
-  ~11% spare capacity, which for a unit-occupancy worker rounds up to a
-  whole extra worker (e.g. `min_load = 100` becomes `100 / 0.9 = 111.1`
-  → 2 active workers instead of 1). With `target_util = 1.0` the math
-  is clean: `min_load = 100 * N` keeps exactly `N` workers active.
-- **`min_load = 0`** — required for scale-to-zero. With `min_load = 0`
-  and a positive `inactivity_timeout`, the endpoint can scale down to
-  zero active workers when no sessions exist.
-- **`max_workers`** — cap on total reservations the endpoint can ever
-  serve concurrently.
-- **`inactivity_timeout`** — positive value enables scale-to-zero
-  after the configured number of seconds of no active sessions. Use
-  alongside `cold_workers = 0` to also drop the inactive pool.
-- **`max_queue_time = 0`** and **`target_queue_time = 0`** —
-  recommended. The autoscaler computes per-worker queue-time as
-  `cur_load / max_perf` and sessions *are* in `cur_load`. With the
-  defaults (~30s), an occupied null worker (`cur_load = 100`,
-  `max_perf = 100`, implied queue = 1s) looks "available" for routing,
-  so a third reservation gets repeatedly 429'd and never triggers
-  scale-up. Zeroing both knobs tells the autoscaler "don't estimate
-  when this worker will free up; route to a free one or make a new
-  one."
-
-#### Known autoscaler quirk
-
-In current Vast Serverless, scale-up reliably fires for the 1→2
-worker transition (the first 429 from an occupied worker activates a
-cold one), but **the 2→3 transition often fails to fire** — the
-third reservation 429s on both occupied workers and sits in the
-autoscaler's global queue indefinitely instead of activating a third
-cold worker. Scale-to-zero also has known issues.
-
-Fixes are pending on the Vast side. Until they land, a temporary
-workaround is to over-provision by reporting `cost > max_perf` on
-session creation:
+## Client demo
 
 ```bash
-python -m workers.null.client --demo --session-cost 200
+# Single reservation
+python -m workers.null.client --endpoint <NAME> --instance alpha
+
+# Staggered three-session trapezoid
+python -m workers.null.client --endpoint <NAME> --instance alpha --demo
 ```
 
-With `cost = 200, max_perf = 100`, each occupied worker reports
-`cur_load / max_perf = 2.0` — clearly over capacity, so the autoscaler
-keeps one extra active worker warm per session. The next
-`/session/create` lands on the warm worker directly with no queue.
-**This is a band-aid, not the design.** The intended steady state
-is `cost = 100` with predictable elastic scale-up.
+Flags: `--duration` (single), `--interval` and `--plateau` (demo
+timing), `--session-cost` (overrides the cost reported at session
+create; default 100 = `max_perf`), `--instance` (`prod` | `alpha` |
+`candidate` | `local`).
 
-## Client example
+## Environment variables
 
-Single reservation (holds for 180s):
-
-```bash
-python -m workers.null.client --endpoint <ENDPOINT_NAME>
-```
-
-Staggered demo:
-
-```bash
-python -m workers.null.client --endpoint <ENDPOINT_NAME> --demo
-```
-
-Starts three sessions 30s apart (all held concurrently), holds the
-3-worker plateau for 5 minutes so the autoscaler has time to actually
-provision the third worker before any scale-down starts, then closes
-the sessions one at a time, also 30s apart, and exits. Every session
-ends cleanly via the SDK's `session.close()` — `200` successes in
-metrics, no cancellations.
-
-Tune the timing with `--interval` and `--plateau`. To exercise the
-local-release path, shell into a worker and run
-`curl -X POST http://127.0.0.1:18999/release`.
-
-## Notes and caveats
-
-- The reservation's lifetime caps how long the session can live without
-  client activity. Set it comfortably longer than the work you expect to
-  do, or have the client periodically POST `/ping` with `session_id` to
-  extend.
-- The `on_close_route` payload (passed at `/session/create`) is POSTed by
-  the framework when the session ends. Useful for notifying your queue
-  consumer that the reservation is closing.
-- `/release` on the internal port is convenient but bypasses
-  `session_auth`. If you need the standard authenticated release flow,
-  pass `session_auth` to your consumer (e.g. through the queue payload)
-  and have it POST to `/session/end` on the framework's HTTP port
-  instead.
+- `BACKEND_HEALTH_URL` — absolute URL the framework healthchecks. Stub
+  is used when unset.
+- `NULL_CONTROL_PORT` — internal control server port. Defaults to `18999`.
