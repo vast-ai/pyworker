@@ -15,12 +15,12 @@ logging.basicConfig(
 log = logging.getLogger(__file__)
 
 ENDPOINT_NAME = "null-prod"
-# Default cost passed to /session/create. Bumping this above the worker's
-# max_perf (100) is how you tell the autoscaler "each session is more than
-# one worker of work" — keeps an extra active worker warm and ready, so
-# the next /session/create lands on a free worker instead of queueing.
-# See README "Endpoint scaling parameters" for the math.
-DEFAULT_SESSION_COST = 200
+# Default cost passed to /session/create. 100 matches the worker's
+# max_perf for clean unit-occupancy semantics: one session = one worker.
+# If you hit autoscaler scale-up issues (queueing past the 2nd active
+# worker), --session-cost 200 is a temporary over-provisioning workaround
+# until the known autoscaler fixes land.
+DEFAULT_SESSION_COST = 100
 
 
 async def reserve(

@@ -133,50 +133,56 @@ authenticated release path.
 ### Endpoint scaling parameters
 
 The null worker reports `max_perf = 100` and each reservation is a
-session of `cost = 100`. Set the endpoint accordingly:
+session of `cost = 100`. The intended model is **one session = one
+worker**, scaling elastically from zero up to as many concurrent
+sessions as you ask for.
 
 - **`target_util = 1.0`** — required. The default of `0.9` reserves
   ~11% spare capacity, which for a unit-occupancy worker rounds up to a
   whole extra worker (e.g. `min_load = 100` becomes `100 / 0.9 = 111.1`
   → 2 active workers instead of 1). With `target_util = 1.0` the math
   is clean: `min_load = 100 * N` keeps exactly `N` workers active.
-- **`min_load`** — set to `100 * N` for `N` always-on workers (with
-  `target_util = 1.0`).
+- **`min_load = 0`** — required for scale-to-zero. With `min_load = 0`
+  and a positive `inactivity_timeout`, the endpoint can scale down to
+  zero active workers when no sessions exist.
 - **`max_workers`** — cap on total reservations the endpoint can ever
   serve concurrently.
-- **Session `cost = 2 × max_perf`** (e.g. `200` when `max_perf = 100`) —
-  recommended. Reporting `cost = max_perf` puts each occupied worker at
-  exactly 100% utilization, which the autoscaler reads as "at target,
-  no action needed." The third reservation then gets 429'd by both
-  occupied workers and stalls in the autoscaler's global queue
-  indefinitely instead of activating a cold worker.
+- **`inactivity_timeout`** — positive value enables scale-to-zero
+  after the configured number of seconds of no active sessions. Use
+  alongside `cold_workers = 0` to also drop the inactive pool.
+- **`max_queue_time = 0`** and **`target_queue_time = 0`** —
+  recommended. The autoscaler computes per-worker queue-time as
+  `cur_load / max_perf` and sessions *are* in `cur_load`. With the
+  defaults (~30s), an occupied null worker (`cur_load = 100`,
+  `max_perf = 100`, implied queue = 1s) looks "available" for routing,
+  so a third reservation gets repeatedly 429'd and never triggers
+  scale-up. Zeroing both knobs tells the autoscaler "don't estimate
+  when this worker will free up; route to a free one or make a new
+  one."
 
-  Bumping `cost` above `max_perf` makes each session look like more than
-  one worker of work (`cur_load / max_perf > 1.0`), so the autoscaler
-  keeps an extra active worker hot per session. Slight over-provisioning
-  in exchange for predictable scale-up. The demo client defaults to
-  `--session-cost 200`.
-- **`max_queue_time = 0`** (or very small, e.g. `0.1`) — required.
-  The per-worker `wait_time` property used internally to reject
-  requests filters sessions out, but the **autoscaler** computes its
-  own queue-time estimate from `cur_load / max_perf` — and `cur_load`
-  *does* include sessions. With defaults around 30s, an occupied null
-  worker (`cur_load = 100`, `max_perf = 100`, queue estimate = 1s)
-  looks "available" and the autoscaler keeps routing extra reservations
-  there, getting 429s and queueing them instead of scaling up. Setting
-  `max_queue_time = 0` makes any in-flight load mark the worker "full"
-  for routing.
-- **`target_queue_time = 0`** — required. Aggressive scale-up trigger;
-  with `max_queue_time = 0` to keep occupied workers off the routing
-  table, this ensures the autoscaler provisions a new worker the
-  moment all existing ones are occupied rather than queueing on its
-  side. The queue-time math conceptually assumes work *completes in
-  proportion to load*, which doesn't hold for sessions (they last
-  hours, not `cur_load / max_perf` seconds). Zeroing both knobs tells
-  the autoscaler "don't estimate when this worker will free up; route
-  to a free one or make a new one."
-- **`inactivity_timeout`** — works as expected: idle (no active
-  sessions) for N seconds → permitted to scale down past `min_load`.
+#### Known autoscaler quirk
+
+In current Vast Serverless, scale-up reliably fires for the 1→2
+worker transition (the first 429 from an occupied worker activates a
+cold one), but **the 2→3 transition often fails to fire** — the
+third reservation 429s on both occupied workers and sits in the
+autoscaler's global queue indefinitely instead of activating a third
+cold worker. Scale-to-zero also has known issues.
+
+Fixes are pending on the Vast side. Until they land, a temporary
+workaround is to over-provision by reporting `cost > max_perf` on
+session creation:
+
+```bash
+python -m workers.null.client --demo --session-cost 200
+```
+
+With `cost = 200, max_perf = 100`, each occupied worker reports
+`cur_load / max_perf = 2.0` — clearly over capacity, so the autoscaler
+keeps one extra active worker warm per session. The next
+`/session/create` lands on the warm worker directly with no queue.
+**This is a band-aid, not the design.** The intended steady state
+is `cost = 100` with predictable elastic scale-up.
 
 ## Client example
 
