@@ -144,13 +144,25 @@ session of `cost = 100`. Set the endpoint accordingly:
   `target_util = 1.0`).
 - **`max_workers`** — cap on total reservations the endpoint can ever
   serve concurrently.
-- **`max_queue_time` / `target_queue_time`** — leave at defaults. Both
-  operate on per-worker `wait_time`, which is computed *excluding*
-  sessions (`backend.py:510`, `data_types.py:307-317`), so a worker
-  holding a reservation reports `wait_time = 0.0`. Tuning these does
-  not change null-worker scaling — additional reservations land or
-  miss based on the `max_sessions = 1` rejection (429), not queue
-  time.
+- **`max_queue_time = 0`** (or very small, e.g. `0.1`) — required.
+  The per-worker `wait_time` property used internally to reject
+  requests filters sessions out, but the **autoscaler** computes its
+  own queue-time estimate from `cur_load / max_perf` — and `cur_load`
+  *does* include sessions. With defaults around 30s, an occupied null
+  worker (`cur_load = 100`, `max_perf = 100`, queue estimate = 1s)
+  looks "available" and the autoscaler keeps routing extra reservations
+  there, getting 429s and queueing them instead of scaling up. Setting
+  `max_queue_time = 0` makes any in-flight load mark the worker "full"
+  for routing.
+- **`target_queue_time = 0`** — required. Aggressive scale-up trigger;
+  with `max_queue_time = 0` to keep occupied workers off the routing
+  table, this ensures the autoscaler provisions a new worker the
+  moment all existing ones are occupied rather than queueing on its
+  side. The queue-time math conceptually assumes work *completes in
+  proportion to load*, which doesn't hold for sessions (they last
+  hours, not `cur_load / max_perf` seconds). Zeroing both knobs tells
+  the autoscaler "don't estimate when this worker will free up; route
+  to a free one or make a new one."
 - **`inactivity_timeout`** — works as expected: idle (no active
   sessions) for N seconds → permitted to scale down past `min_load`.
 
