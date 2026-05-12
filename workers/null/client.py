@@ -40,7 +40,7 @@ async def reserve(
     lifetime = hold_for + 60
     start = time.monotonic()
     log.info("[%s] creating session (lifetime=%.0fs, hold=%.0fs)", label, lifetime, hold_for)
-    async with endpoint.session(cost=SESSION_COST, lifetime=lifetime) as s:
+    async with await endpoint.session(cost=SESSION_COST, lifetime=lifetime) as s:
         log.info("[%s] session %s open", label, s.session_id)
         try:
             await asyncio.sleep(hold_for)
