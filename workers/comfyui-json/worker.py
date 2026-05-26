@@ -29,6 +29,10 @@ import logging
 import os
 import random
 import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig, BenchmarkConfig
@@ -54,8 +58,9 @@ from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig, Benchma
 #
 # These tokens are emitted by ai-dock/comfyui-api-wrapper >= the
 # "feat/backend-readiness-log-signals" change. Older wrappers won't
-# emit BACKENDS_READY, so warm-up will stall — pin the wrapper version
-# accordingly.
+# emit BACKENDS_READY natively; for them, a background readiness shim
+# (see _readiness_shim below) probes the stack and synthesises the
+# token so warm-up triggers regardless of wrapper version.
 MODEL_SERVER_URL           = 'http://127.0.0.1'
 MODEL_SERVER_PORT          = 18288
 MODEL_LOG_FILE             = '/var/log/portal/api-wrapper.log'
@@ -221,6 +226,67 @@ def make_benchmark_payload() -> dict:
     return _custom_workflow_payload() or _default_payload()
 
 
+# --- Readiness shim ----------------------------------------------------
+#
+# Older api-wrapper versions (pre feat/backend-readiness-log-signals)
+# never emit BACKENDS_READY, so the SDK's log tail would hang on warm-up
+# indefinitely on those images. Forks of the base image can't be repinned
+# for us, so we probe the stack ourselves and append BACKENDS_READY to
+# the log the SDK is tailing once the stack is reachable end-to-end.
+#
+# On a current wrapper the real token appears first; ours is then a
+# harmless duplicate. The probe re-implements the gate the new wrapper
+# enforces (ComfyUI reachable AND api-wrapper /health 200) — the same
+# end-to-end condition that motivated the move to BACKENDS_READY — so
+# correctness is preserved on old wrappers and unchanged on new ones.
+_COMFY_BACKEND_URL  = "http://127.0.0.1:18188/system_stats"
+_WRAPPER_HEALTH_URL = f"{MODEL_SERVER_URL}:{MODEL_SERVER_PORT}{MODEL_HEALTHCHECK_ENDPOINT}"
+
+# Upper bound roughly matches the api-wrapper's own backend-readiness
+# deadline. If we exceed it, we deliberately do NOT write the token —
+# the SDK's warm-up will time out naturally and surface a real failure
+# rather than us papering over a stuck stack.
+_READINESS_DEADLINE_S       = 600
+_READINESS_PROBE_INTERVAL_S = 5
+
+# Small head-start so Worker(...).run() has time to open its tail
+# before we could plausibly write. Stack startup is many seconds even
+# in the hot-cache case, so this only matters in pathological "already
+# fully warm" restarts.
+_READINESS_PROBE_GRACE_S = 2
+
+
+def _probe(url: str, timeout_s: float = 2.0) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout_s) as r:
+            return 200 <= r.status < 300
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _readiness_shim() -> None:
+    time.sleep(_READINESS_PROBE_GRACE_S)
+    deadline = time.monotonic() + _READINESS_DEADLINE_S
+    while time.monotonic() < deadline:
+        if _probe(_COMFY_BACKEND_URL) and _probe(_WRAPPER_HEALTH_URL):
+            try:
+                # O_APPEND single-line writes are atomic under PIPE_BUF
+                # on Linux, so no interleaving risk with the wrapper's
+                # own writer.
+                with open(MODEL_LOG_FILE, "a") as f:
+                    f.write("BACKENDS_READY (synthesised by pyworker readiness shim)\n")
+                log.info("readiness shim: stack reachable; emitted BACKENDS_READY")
+            except OSError as e:
+                log.warning("readiness shim: could not write to %s: %s", MODEL_LOG_FILE, e)
+            return
+        time.sleep(_READINESS_PROBE_INTERVAL_S)
+    log.warning(
+        "readiness shim: stack not reachable within %ds; "
+        "letting SDK warm-up time out naturally",
+        _READINESS_DEADLINE_S,
+    )
+
+
 worker_config = WorkerConfig(
     model_server_url=MODEL_SERVER_URL,
     model_server_port=MODEL_SERVER_PORT,
@@ -242,5 +308,7 @@ worker_config = WorkerConfig(
         on_info=MODEL_INFO_LOG_MSGS
     )
 )
+
+threading.Thread(target=_readiness_shim, name="readiness-shim", daemon=True).start()
 
 Worker(worker_config).run()
