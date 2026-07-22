@@ -27,6 +27,25 @@ def _env_float(name, default):
     return v if math.isfinite(v) and v > 0 else float(default)
 
 
+# The engine-specific "which model to serve" vars, in precedence order. A single
+# template must work for both on-demand and serverless; the on-demand recommended
+# templates set only the engine var (never MODEL_NAME), so the serverless benchmark
+# has to recover the served-model id from it. vLLM/SGLang serve under exactly this
+# value (no --served-model-name rewrite), so it matches /v1/models; llama.cpp ignores
+# the request's model field. Only one is ever set on a given image. See CON-1612.
+_MODEL_NAME_VARS = ("MODEL_NAME", "VLLM_MODEL", "SGLANG_MODEL", "LLAMA_MODEL")
+
+
+def _resolve_model_name():
+    """The served-model id for benchmark requests: an explicit MODEL_NAME wins (a
+    template can always override), else the first set engine var. None if all empty."""
+    for var in _MODEL_NAME_VARS:
+        v = os.environ.get(var)
+        if v:
+            return v
+    return None
+
+
 # Per-worker configuration. Every value is env-overridable with the previous
 # hardcoded value as the default, so the image (base-image) can bake per-backend
 # values while absent-env reproduces today's behaviour exactly. See CON-1612.
@@ -65,9 +84,12 @@ def request_parser(request):
 
 def completions_benchmark_generator() -> dict:
     prompt = " ".join(random.choices(WORD_LIST, k=int(250)))
-    model = os.environ.get("MODEL_NAME")
+    model = _resolve_model_name()
     if not model:
-        raise ValueError("MODEL_NAME environment variable not set")
+        raise ValueError(
+            "No served-model id set: MODEL_NAME / VLLM_MODEL / SGLANG_MODEL / "
+            "LLAMA_MODEL are all empty"
+        )
 
     benchmark_data = {
         "model": model,
