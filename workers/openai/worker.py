@@ -140,6 +140,6 @@ _config = dict(
 if "readiness" in inspect.signature(WorkerConfig).parameters:
     _config["readiness"] = os.environ.get("READINESS", "logs")
     _config["readiness_timeout"] = _env_float("READINESS_TIMEOUT", 1800)
-    _config["healthcheck_probe_timeout"] = _env_float("HEALTHCHECK_PROBE_TIMEOUT", 10)
+    _config["healthcheck_probe_timeout"] = _env_float("HEALTHCHECK_PROBE_TIMEOUT", 30)
 
 Worker(WorkerConfig(**_config)).run()
