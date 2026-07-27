@@ -1,29 +1,76 @@
+import inspect
+import math
 import nltk
 import random
 import os
 
 from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig, BenchmarkConfig
 
-# vLLM model configuration
+
+def _env_lines(name, default):
+    """A newline-delimited env var -> list[str], or `default` if unset/empty. Each line
+    is stripped (a YAML block-scalar / heredoc value can carry leading indentation, and
+    the log grammar is substring-matched, so an unstripped pattern would never match).
+    Lets the image (base-image) supply per-backend log grammar; absent -> default."""
+    raw = os.environ.get(name)
+    return [s for ln in raw.splitlines() if (s := ln.strip())] if raw else default
+
+
+def _env_float(name, default):
+    """A POSITIVE-float env var with a safe fallback. A malformed, non-finite, or
+    non-positive value -> default: these feed asyncio timeouts, so 0/negative would
+    instantly fail readiness and inf/nan would hang it."""
+    try:
+        v = float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+    return v if math.isfinite(v) and v > 0 else float(default)
+
+
+# The engine-specific "which model to serve" vars, in precedence order. A single
+# template must work for both on-demand and serverless; the on-demand recommended
+# templates set only the engine var (never MODEL_NAME), so the serverless benchmark
+# has to recover the served-model id from it. vLLM/SGLang serve under exactly this
+# value (no --served-model-name rewrite), so it matches /v1/models; llama.cpp ignores
+# the request's model field. Only one is ever set on a given image. See CON-1612.
+_MODEL_NAME_VARS = ("MODEL_NAME", "VLLM_MODEL", "SGLANG_MODEL", "LLAMA_MODEL")
+
+
+def _resolve_model_name():
+    """The served-model id for benchmark requests: an explicit MODEL_NAME wins (a
+    template can always override), else the first set engine var. None if all empty."""
+    for var in _MODEL_NAME_VARS:
+        v = os.environ.get(var)
+        if v:
+            return v
+    return None
+
+
+# Per-worker configuration. Every value is env-overridable with the previous
+# hardcoded value as the default, so the image (base-image) can bake per-backend
+# values while absent-env reproduces today's behaviour exactly. See CON-1612.
 MODEL_SERVER_URL           = 'http://127.0.0.1'
 MODEL_SERVER_PORT          = 18000
-MODEL_LOG_FILE             = '/var/log/portal/vllm.log'
-MODEL_HEALTHCHECK_ENDPOINT = "/health"
+MODEL_LOG_FILE             = os.environ.get("MODEL_LOG", "/var/log/portal/vllm.log")
+# `MODEL_HEALTH_ENDPOINT` is the established env var (the framework reads it too, and
+# the vLLM serverless templates set it). A path resolves against MODEL_SERVER_URL; a
+# full URL is used as-is (the worker venv is built fresh, so aiohttp is current).
+MODEL_HEALTHCHECK_ENDPOINT = os.environ.get("MODEL_HEALTH_ENDPOINT", "/health")
 
-# vLLM-specific log messages
-MODEL_LOAD_LOG_MSG = [
+# Log-action grammar — vLLM defaults, overridable per backend by the image.
+MODEL_LOAD_LOG_MSG = _env_lines("MODEL_LOAD_LOG_MSG", [
     "Application startup complete.",
-]
+])
 
-MODEL_ERROR_LOG_MSGS = [
+MODEL_ERROR_LOG_MSGS = _env_lines("MODEL_ERROR_LOG_MSGS", [
     "INFO exited: vllm",
     "RuntimeError: Engine",
-    "Traceback (most recent call last):"
-]
+    "Traceback (most recent call last):",
+])
 
-MODEL_INFO_LOG_MSGS = [
-    '"message":"Download'
-]
+MODEL_INFO_LOG_MSGS = _env_lines("MODEL_INFO_LOG_MSGS", [
+    '"message":"Download',
+])
 
 nltk.download("words")
 WORD_LIST = nltk.corpus.words.words()
@@ -37,9 +84,12 @@ def request_parser(request):
 
 def completions_benchmark_generator() -> dict:
     prompt = " ".join(random.choices(WORD_LIST, k=int(250)))
-    model = os.environ.get("MODEL_NAME")
+    model = _resolve_model_name()
     if not model:
-        raise ValueError("MODEL_NAME environment variable not set")
+        raise ValueError(
+            "No served-model id set: MODEL_NAME / VLLM_MODEL / SGLANG_MODEL / "
+            "LLAMA_MODEL are all empty"
+        )
 
     benchmark_data = {
         "model": model,
@@ -50,7 +100,7 @@ def completions_benchmark_generator() -> dict:
 
     return benchmark_data
 
-worker_config = WorkerConfig(
+_config = dict(
     model_server_url=MODEL_SERVER_URL,
     model_server_port=MODEL_SERVER_PORT,
     model_log_file=MODEL_LOG_FILE,
@@ -83,4 +133,13 @@ worker_config = WorkerConfig(
     )
 )
 
-Worker(worker_config).run()
+# Readiness config (health-gated readiness, vast-cli WS2). Feature-detected: only
+# passed when the installed vastai supports it, so a new worker on an OLD framework
+# degrades to log mode instead of a TypeError. Absent READINESS defaults to 'logs'
+# (current behaviour) — nothing changes until an image/template sets it.
+if "readiness" in inspect.signature(WorkerConfig).parameters:
+    _config["readiness"] = os.environ.get("READINESS", "logs")
+    _config["readiness_timeout"] = _env_float("READINESS_TIMEOUT", 1800)
+    _config["healthcheck_probe_timeout"] = _env_float("HEALTHCHECK_PROBE_TIMEOUT", 30)
+
+Worker(WorkerConfig(**_config)).run()
