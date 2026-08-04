@@ -2,6 +2,8 @@
 
 This is the base PyWorker for OpenAI compatible inference servers.  See the [Serverless documentation](https://docs.vast.ai/serverless) for guides and how-to's.
 
+All worker logic lives in `core.py`. The per-engine backends `vllm`, `sglang` and `llama` are thin adapters over this core, differing only in their baked default log grammar (every value is env-overridable by the image). `BACKEND=openai` is a backwards-compatible **alias for `vllm`** — `openai/worker.py` runs the vLLM worker directly, so there is one definition of the vLLM defaults and no second copy to drift; templates declaring `openai` must run a pyworker new enough to contain this split. The demo test client in `client.py` is shared — run it as `python -m workers.openai.client` regardless of which engine backend you deployed.
+
 ## Instance Setup
 
 1. Pick a template
