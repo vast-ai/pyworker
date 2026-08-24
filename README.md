@@ -90,7 +90,7 @@ Worker(worker_config).run()
 
 This repository contains example PyWorkers corresponding to common Vast templates, including:
 
-- **vLLM**: OpenAI-compatible completions/chat endpoints with parallel request support
+- **vLLM / SGLang / llama.cpp**: OpenAI-compatible completions/chat endpoints with parallel request support. These share one implementation in `workers/openai/core.py`; each `workers/{vllm,sglang,llama}` backend is a thin adapter supplying that engine's default log grammar (env-overridable by the image). `BACKEND=openai` remains supported.
 - **TGI (Text Generation Inference)**: OpenAI-compatible endpoints and log-based readiness
 - **ComfyUI (Image / JSON workflows)**: `/generate/sync` for ComfyUI workflow execution
 - **ComfyUI Wan 2.2 (T2V)**: ComfyUI workflow execution producing video outputs
