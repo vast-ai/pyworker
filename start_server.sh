@@ -53,6 +53,39 @@ JSON
     exit 1
 }
 
+VAST_GITHUB_AUTH_KEY="http.https://github.com/vast-ai/.extraHeader"
+
+function configure_github_token(){
+    [ -n "${VAST_PYWORKER_PUBLIC_GITHUB_TOKEN:-}" ] || return 0
+    local basic
+    basic=$(printf 'x-access-token:%s' "$VAST_PYWORKER_PUBLIC_GITHUB_TOKEN" | base64 | tr -d '\n')
+    if git config --global --replace-all "$VAST_GITHUB_AUTH_KEY" "Authorization: Basic $basic"; then
+        export GIT_TERMINAL_PROMPT=0
+        echo "authenticating vast-ai GitHub reads with VAST_PYWORKER_PUBLIC_GITHUB_TOKEN"
+    else
+        echo "WARNING: failed to apply VAST_PYWORKER_PUBLIC_GITHUB_TOKEN, reading GitHub anonymously"
+    fi
+}
+
+function github_token_applied(){
+    [ -n "${VAST_PYWORKER_PUBLIC_GITHUB_TOKEN:-}" ] || return 1
+    git config --global --get "$VAST_GITHUB_AUTH_KEY" > /dev/null 2>&1
+}
+
+function drop_github_token(){
+    github_token_applied || return 1
+    echo "GitHub rejected VAST_PYWORKER_PUBLIC_GITHUB_TOKEN, retrying anonymously"
+    git config --global --unset-all "$VAST_GITHUB_AUTH_KEY" || true
+}
+
+function git_net(){
+    if git "$@"; then
+        return 0
+    fi
+    drop_github_token || return 1
+    git "$@"
+}
+
 function install_vastai_sdk() {
     local uv_flags=()
     if [ "${USE_SYSTEM_PYTHON:-}" = "true" ]; then
@@ -70,7 +103,9 @@ function install_vastai_sdk() {
         fi
         echo "Installing vastai from https://github.com/vast-ai/vast-cli/ @ ${SDK_BRANCH}"
         if ! uv pip install "${uv_flags[@]}" "vastai @ git+https://github.com/vast-ai/vast-cli.git@${SDK_BRANCH}"; then
-            report_error_and_exit "Failed to install vastai from vast-ai/vast-cli@${SDK_BRANCH}"
+            if ! drop_github_token || ! uv pip install "${uv_flags[@]}" "vastai @ git+https://github.com/vast-ai/vast-cli.git@${SDK_BRANCH}"; then
+                report_error_and_exit "Failed to install vastai from vast-ai/vast-cli@${SDK_BRANCH}"
+            fi
         fi
         return 0
     fi
@@ -104,6 +139,8 @@ echo_var ENV_PATH
 echo_var DEBUG_LOG
 echo_var PYWORKER_LOG
 echo_var MODEL_LOG
+
+configure_github_token
 
 ROTATE_MODEL_LOG="${ROTATE_MODEL_LOG:-false}"
 if [ "$ROTATE_MODEL_LOG" = "true" ] && [ -e "$MODEL_LOG" ]; then
@@ -157,19 +194,19 @@ elif [ ! -d "$ENV_PATH" ]; then
     fi
 
     if [[ ! -d $SERVER_DIR ]]; then
-        if ! git clone "${PYWORKER_REPO:-https://github.com/vast-ai/pyworker}" "$SERVER_DIR"; then
+        if ! git_net clone "${PYWORKER_REPO:-https://github.com/vast-ai/pyworker}" "$SERVER_DIR"; then
             report_error_and_exit "Failed to clone pyworker repository"
         fi
     elif [ "$FORCE_UPDATE" = true ]; then
         echo "Force updating pyworker repository"
-        if ! (cd "$SERVER_DIR" && git fetch --all); then
+        if ! (cd "$SERVER_DIR" && git_net fetch --all); then
             report_error_and_exit "Failed to fetch pyworker repository updates"
         fi
     fi
     if [[ -n ${PYWORKER_REF:-} ]]; then
         if [ "$FORCE_UPDATE" = true ]; then
             echo "Force updating to pyworker reference: $PYWORKER_REF"
-            if ! (cd "$SERVER_DIR" && git checkout "$PYWORKER_REF" && git pull); then
+            if ! (cd "$SERVER_DIR" && git checkout "$PYWORKER_REF" && git_net pull); then
                 report_error_and_exit "Failed to force update pyworker reference: $PYWORKER_REF"
             fi
         else
@@ -179,7 +216,7 @@ elif [ ! -d "$ENV_PATH" ]; then
         fi
     elif [ "$FORCE_UPDATE" = true ]; then
         echo "Force updating pyworker to latest"
-        if ! (cd "$SERVER_DIR" && git pull); then
+        if ! (cd "$SERVER_DIR" && git_net pull); then
             report_error_and_exit "Failed to pull latest pyworker changes"
         fi
     fi
@@ -219,18 +256,18 @@ else
 
         if [[ -d $SERVER_DIR ]]; then
             echo "Force updating pyworker repository"
-            if ! (cd "$SERVER_DIR" && git fetch --all); then
+            if ! (cd "$SERVER_DIR" && git_net fetch --all); then
                 report_error_and_exit "Failed to fetch pyworker repository updates"
             fi
 
             if [[ -n ${PYWORKER_REF:-} ]]; then
                 echo "Force updating to pyworker reference: $PYWORKER_REF"
-                if ! (cd "$SERVER_DIR" && git checkout "$PYWORKER_REF" && git pull); then
+                if ! (cd "$SERVER_DIR" && git checkout "$PYWORKER_REF" && git_net pull); then
                     report_error_and_exit "Failed to force update pyworker reference: $PYWORKER_REF"
                 fi
             else
                 echo "Force updating pyworker to latest"
-                if ! (cd "$SERVER_DIR" && git pull); then
+                if ! (cd "$SERVER_DIR" && git_net pull); then
                     report_error_and_exit "Failed to pull latest pyworker changes"
                 fi
             fi
