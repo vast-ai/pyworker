@@ -93,6 +93,20 @@ function install_vastai_sdk() {
 [ -z "$CONTAINER_ID" ] && report_error_and_exit "CONTAINER_ID must be set!"
 [ "$BACKEND" = "comfyui" ] && [ -z "$COMFY_MODEL" ] && report_error_and_exit "For comfyui backends, COMFY_MODEL must be set!"
 
+if [ -z "${BACKEND:-}" ]; then
+    if [ -n "${VLLM_MODEL:-}" ]; then
+        BACKEND=vllm
+    elif [ -n "${SGLANG_MODEL:-}" ]; then
+        BACKEND=sglang
+    elif [ -n "${LLAMA_MODEL:-}" ]; then
+        BACKEND=llama
+    fi
+    if [ -n "${BACKEND:-}" ]; then
+        export BACKEND
+        echo "BACKEND was unset; inferred BACKEND=$BACKEND from engine environment"
+    fi
+fi
+
 echo "start_server.sh"
 date
 
@@ -360,7 +374,8 @@ set -e
 
 if [ "${PY_STATUS}" -ne 0 ]; then
     if [ ! -f "$SERVER_DIR/worker.py" ] && [ ! -f "$SERVER_DIR/workers/$BACKEND/worker.py" ] && [ ! -f "$SERVER_DIR/workers/$BACKEND/server.py" ]; then
-        report_error_and_exit "Failed to find PyWorker"
+        available=$(ls "$SERVER_DIR/workers" 2>/dev/null | tr '\n' ' ') || true
+        report_error_and_exit "Failed to find PyWorker for BACKEND='${BACKEND}' in $SERVER_DIR (available: ${available:-none})"
     fi
     report_error_and_exit "PyWorker exited with status ${PY_STATUS}"
 fi
