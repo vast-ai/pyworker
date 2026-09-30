@@ -9,18 +9,29 @@ All worker logic lives in `core.py`. The per-engine backends `vllm`, `sglang` an
 | Route | Request | Response |
 |---|---|---|
 | `/v1/completions`, `/v1/chat/completions` | JSON | JSON or SSE |
+| `/v1/chat/completions/batch` | JSON (`messages`: a list of conversations) | JSON |
 | `/v1/embeddings` | JSON | JSON |
 | `/v1/audio/speech` | JSON (voice-clone `ref_audio`: http(s) URL or `data:` URI) | audio bytes |
+| `/v1/audio/speech/batch` | JSON (`items`, each a speech request; `ref_audio` on the batch or an item) | JSON, audio base64'd per item |
+| `/v1/audio/generate` | JSON (`input` is the prompt; `audio_length` in seconds) | audio bytes |
 | `/v1/audio/transcriptions`, `/v1/audio/translations` | JSON with the file base64'd in `file` | JSON or text |
 | `/v1/images/generations` | JSON | JSON |
 | `/v1/images/edits` | JSON with `image` (base64, or a list), or `url` (http(s) or `data:`) | JSON |
+| `/v1/videos/sync` | JSON: form fields, plus uploads base64'd (`input_reference`, `input_references`, `source_video`, ...) | `video/mp4` bytes |
 
-The worker envelope is JSON, so uploads arrive base64-encoded (`file`, `image`, `mask`) and
-are sent to the engine as multipart form data. `filename` / `mask_filename` set the file
-type. Requires a `vastai` SDK with multipart support; on an older SDK the three upload
-routes are not served.
+The worker envelope is JSON, so uploads arrive base64-encoded (`file`, `image`, `mask`, and
+the video file fields) and are sent to the engine as multipart form data. `filename` /
+`mask_filename` / `<field>_filename` set the file type. Requires a `vastai` SDK with
+multipart support; on an older SDK the upload routes are not served.
 
-References (`url` on edits, `ref_audio` on speech) are passed to the engine, not uploaded,
+`/v1/videos/sync` holds the request open until the video is done (the engine gives up after
+`VLLM_OMNI_VIDEO_SYNC_TIMEOUT`, 600 s by default). Its reference objects (`image_reference`,
+`video_reference`, `audio_reference`), `lora` and `extra_params` are sent as JSON strings,
+which is how the engine reads them from a form. The asynchronous `/v1/videos` job API is
+not served: it is polled with GETs, and the worker takes only POSTs.
+
+References (`url` on edits, `ref_audio` on speech and speech batches, and the URL in each
+video reference) are passed to the engine, not uploaded,
 so they must be an http(s) URL or a `data:` URI; anything else, a file path included, is
 refused. http(s) URLs are fetched by the engine from inside the instance and are not
 filtered here, as with `image_url` on chat.
@@ -39,7 +50,7 @@ What each engine actually serves depends on the engine and the loaded model:
 |---|---|
 | vLLM, SGLang, llama.cpp | completions, chat; embeddings with an embedding model |
 | vLLM with Whisper or Voxtral | transcriptions, translations (and no completions at all) |
-| vLLM-Omni (`--omni`) | image generations and edits, speech, alongside text |
+| vLLM-Omni (`--omni`) | image generations and edits, speech and speech batches, audio generation (Stable Audio), video (`/v1/videos/sync`), chat batches, alongside text |
 
 ## Benchmarking
 

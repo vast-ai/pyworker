@@ -27,6 +27,11 @@ WORD_LIST = nltk.corpus.words.words()
 
 REF_IMAGE_SIDE = 1024      # one reference image, per side
 REF_AUDIO_SECONDS = 30.0   # one reference clip: one Whisper window
+REF_AUDIO_GEN_SECONDS = 10.0   # one reference generated clip (/v1/audio/generate)
+# One reference video: a short clip at a size every Wan-family pipeline accepts
+# (sides a multiple of 32, 4k+1 frames).
+REF_VIDEO_WIDTH, REF_VIDEO_HEIGHT, REF_VIDEO_FRAMES = 832, 480, 33
+BATCH_BENCHMARK_ITEMS = 4  # a batch benchmark splits one reference request this many ways
 # One reference embedding request. Sized for a 256-token encoder (all-MiniLM-L6): engines
 # reject an over-length input rather than truncate it, and tokens per character vary
 # with the draw, so a reference near the limit fails by luck.
@@ -125,6 +130,27 @@ def speech_benchmark_generator() -> dict:
     return {**_model(), "input": _words(500), **_voice()}
 
 
+def chat_batch_benchmark_generator() -> dict:
+    """One reference request split across a batch: BATCH_BENCHMARK_ITEMS conversations
+    whose max_tokens sum to the chat benchmark's."""
+    k = BATCH_BENCHMARK_ITEMS
+    return {**_model(),
+            "messages": [[{"role": "user", "content": " ".join(random.choices(WORD_LIST, k=250 // k))}]
+                         for _ in range(k)],
+            "temperature": 0.7, "max_tokens": 500 // k}
+
+
+def speech_batch_benchmark_generator() -> dict:
+    """One reference request split across a batch: the items' text sums to the speech
+    benchmark's."""
+    k = BATCH_BENCHMARK_ITEMS
+    return {**_model(), "items": [{"input": _words(500 // k)} for _ in range(k)], **_voice()}
+
+
+def audio_generate_benchmark_generator() -> dict:
+    return {**_model(), "input": _words(60), "audio_length": REF_AUDIO_GEN_SECONDS}
+
+
 def images_benchmark_generator() -> dict:
     return {**_model(), "prompt": _words(60), "size": f"{REF_IMAGE_SIDE}x{REF_IMAGE_SIDE}", "n": 1}
 
@@ -142,11 +168,15 @@ BENCHMARKS = {
     "/v1/chat/completions": Benchmark(10, 3, chat_benchmark_generator),
     "/v1/embeddings": Benchmark(10, 3, embeddings_benchmark_generator),
     "/v1/audio/speech": Benchmark(4, 2, speech_benchmark_generator),
+    "/v1/audio/speech/batch": Benchmark(4, 2, speech_batch_benchmark_generator),
+    "/v1/chat/completions/batch": Benchmark(10, 3, chat_batch_benchmark_generator),
+    "/v1/audio/generate": Benchmark(2, 1, audio_generate_benchmark_generator),
     "/v1/images/generations": Benchmark(2, 1, images_benchmark_generator),
     # Uploads: the payload class builds these. Every served route has a benchmark, so a
     # deployment narrowed to any one route (an edit-only model, say) can become ready.
     "/v1/images/edits": Benchmark(2, 1),
     "/v1/audio/transcriptions": Benchmark(4, 2),
     "/v1/audio/translations": Benchmark(4, 2),
+    "/v1/videos/sync": Benchmark(1, 1),
 }
 DEFAULT_BENCHMARK_ROUTE = "/v1/completions"

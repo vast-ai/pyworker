@@ -7,6 +7,7 @@ Stdlib unittest so it needs no test dependency the worker does not already have:
 import base64
 import contextlib
 import io
+import json
 import os
 import subprocess
 import sys
@@ -137,7 +138,9 @@ def _wav(seconds, rate=16000):
 
 ALL_ROUTES = {"/v1/completions", "/v1/chat/completions", "/v1/audio/speech",
               "/v1/embeddings", "/v1/images/generations", "/v1/images/edits",
-              "/v1/audio/transcriptions", "/v1/audio/translations"}
+              "/v1/audio/transcriptions", "/v1/audio/translations",
+              "/v1/chat/completions/batch", "/v1/audio/speech/batch",
+              "/v1/audio/generate", "/v1/videos/sync"}
 
 
 def handlers():
@@ -500,7 +503,12 @@ class TestTranscriptionBenchmarkPayload(unittest.TestCase):
                  "/v1/audio/transcriptions":
                      lambda _b: TranscriptionPayload.for_test().count_workload(),
                  "/v1/audio/translations":
-                     lambda _b: TranscriptionPayload.for_test().count_workload()}
+                     lambda _b: TranscriptionPayload.for_test().count_workload(),
+                 "/v1/chat/completions/batch": core._chat_batch_workload,
+                 "/v1/audio/speech/batch": core._speech_batch_workload,
+                 "/v1/audio/generate": core._audio_generate_workload,
+                 "/v1/videos/sync":
+                     lambda _b: core.VideoPayload.for_test().count_workload()}
         for route, b in BENCHMARKS.items():
             with self.subTest(route):
                 body = b.generator() if b.generator else None
@@ -747,6 +755,9 @@ class TestAdmissionGate(unittest.TestCase):
                              "ref_audio_2": "https://x/a.wav"},
         "/v1/embeddings": {"input": ["x" * 10_000] * 1_000},
         "/v1/images/generations": {"n": 100_000, "size": "8192x8192"},
+        "/v1/audio/speech/batch": {"items": [{"input": "x" * 100_000}] * 1_000,
+                                   "ref_audio": "https://x/a.wav"},
+        "/v1/audio/generate": {"audio_length": 1e308},
     }
 
     def test_no_single_request_trips_the_gate(self):
@@ -767,6 +778,13 @@ class TestAdmissionGate(unittest.TestCase):
             with self.subTest(route):
                 wt = wait_time_with_one_in_flight(payload.count_workload())
                 self.assertLess(wt, h[route].max_queue_time)
+
+    def test_a_large_video_does_not_trip_the_gate(self):
+        payload = core.VideoPayload.from_json_msg(
+            {"prompt": "p", "width": 8192, "height": 8192, "num_frames": 10**9,
+             "num_outputs_per_prompt": 10})
+        wt = wait_time_with_one_in_flight(payload.count_workload())
+        self.assertLess(wt, handlers()["/v1/videos/sync"].max_queue_time)
 
     def test_absurd_declared_sizes_do_not_raise(self):
         calc = handlers()["/v1/images/generations"].workload_calculator
@@ -844,3 +862,129 @@ class TestBenchmarkClipCost(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBatchRoutes(unittest.TestCase):
+    def test_a_chat_batch_costs_each_conversation(self):
+        calc = handlers()["/v1/chat/completions/batch"].workload_calculator
+        convo = [{"role": "user", "content": "hi"}]
+        self.assertEqual(calc({"messages": [convo] * 4, "max_tokens": 100}), 400)
+        self.assertEqual(calc({"messages": [convo] * 2, "max_tokens": 100, "n": 3}), 600)
+        self.assertEqual(calc({"messages": [convo], "max_completion_tokens": 50}), 50)
+
+    def test_a_malformed_chat_batch_does_not_raise(self):
+        calc = handlers()["/v1/chat/completions/batch"].workload_calculator
+        for data in ({}, {"messages": "x", "max_tokens": 5}, {"messages": [[]], "max_tokens": "a"},
+                     {"messages": [[]], "max_tokens": -5, "n": "z"}):
+            with self.subTest(str(data)):
+                self.assertGreaterEqual(calc(data), 0)
+
+    def test_a_speech_batch_sums_its_items_and_counts_the_batch_reference(self):
+        calc = handlers()["/v1/audio/speech/batch"].workload_calculator
+        item = {"input": "x" * core.REF_SPEECH_CHARS}
+        self.assertEqual(calc({"items": [item] * 2}), 2 * core.BENCHMARK_MAX_TOKENS)
+        # the batch reference stands in for each item's: one encoder pass per item
+        self.assertEqual(calc({"items": [item] * 2, "ref_audio": "https://x/a.wav"}),
+                         4 * core.BENCHMARK_MAX_TOKENS)
+        self.assertEqual(calc({"items": "x"}), FLOOR)
+
+    def test_every_speech_batch_reference_is_checked(self):
+        parse = handlers()["/v1/audio/speech/batch"].request_parser
+        for label, data in [
+            ("batch", {"items": [{"input": "a"}], "ref_audio": "/etc/passwd"}),
+            ("item", {"items": [{"input": "a", "ref_audio": "/etc/passwd"}]}),
+            ("not a list", {"items": {"input": "a"}}),
+            ("not objects", {"items": ["a"]}),
+        ]:
+            with self.subTest(label), self.assertRaises(JsonDataException):
+                parse(data)
+        ok = parse({"items": [{"input": "a", "ref_audio": ""}], "ref_audio": "https://x/a.wav"})
+        self.assertNotIn("ref_audio", ok["items"][0])
+
+    def test_the_batch_benchmarks_split_one_reference_request(self):
+        for route in ("/v1/chat/completions/batch", "/v1/audio/speech/batch"):
+            with self.subTest(route):
+                body = BENCHMARKS[route].generator()
+                key = "messages" if "chat" in route else "items"
+                self.assertEqual(len(body[key]), 4)
+
+
+class TestAudioGenerate(unittest.TestCase):
+    def test_workload_is_seconds_of_audio(self):
+        calc = handlers()["/v1/audio/generate"].workload_calculator
+        ref = core.REF_AUDIO_GEN_SECONDS
+        self.assertEqual(calc({"audio_length": ref}), core.BENCHMARK_MAX_TOKENS)
+        self.assertEqual(calc({"audio_length": 2 * ref}), 2 * core.BENCHMARK_MAX_TOKENS)
+        self.assertEqual(calc({}), core.BENCHMARK_MAX_TOKENS)       # the engine's own length
+        for bad in ("x", float("nan"), None, -3, [1]):
+            with self.subTest(bad):
+                self.assertGreaterEqual(calc({"audio_length": bad}), FLOOR)
+
+    def test_input_is_the_prompt_not_a_wrapper(self):
+        parse = handlers()["/v1/audio/generate"].request_parser
+        self.assertEqual(parse({"input": "rain on a tin roof"})["input"], "rain on a tin roof")
+
+
+class TestVideo(unittest.TestCase):
+    PNG = None
+
+    def setUp(self):
+        from workers.openai.benchmark import synthetic_png
+        self.png = base64.b64encode(synthetic_png(64)).decode()
+
+    def test_an_upload_becomes_one_file_part_and_the_rest_form_fields(self):
+        p = core.VideoPayload.from_json_msg(
+            {"prompt": "a cat", "input_reference": self.png,
+             "input_reference_filename": "cat.png", "num_frames": 33})
+        body = p.generate_payload_multipart()
+        name, raw, ctype = body["input_reference"]
+        self.assertEqual((name, ctype), ("cat.png", "image/png"))
+        self.assertEqual(body["prompt"], "a cat")
+        self.assertEqual(body["num_frames"], 33)
+        self.assertEqual(body["model"], "openai/whisper-large-v3")
+
+    def test_input_references_repeat_and_single_fields_do_not(self):
+        p = core.VideoPayload.from_json_msg(
+            {"prompt": "p", "input_references": [self.png, self.png],
+             "input_references_filename": ["a.png", "b.png"]})
+        self.assertEqual([f[0] for f in p.files["input_references"]], ["a.png", "b.png"])
+        with self.assertRaises(JsonDataException):
+            core.VideoPayload.from_json_msg({"prompt": "p", "source_video": [self.png] * 2})
+
+    def test_each_field_takes_only_its_formats(self):
+        with self.assertRaises(JsonDataException):
+            core.VideoPayload.from_json_msg(
+                {"prompt": "p", "source_audio": self.png, "source_audio_filename": "x.png"})
+        p = core.VideoPayload.from_json_msg({"prompt": "p", "source_audio": b64(_wav(1))})
+        self.assertEqual(p.files["source_audio"][2], "audio/wav")
+
+    def test_references_are_sent_as_one_json_field_and_their_urls_checked(self):
+        refs = [{"image_url": "https://x/a.png"}, {"file_id": "file-1"}]
+        p = core.VideoPayload.from_json_msg({"prompt": "p", "image_reference": refs,
+                                             "lora": {"name": "l", "path": "hub/x"}})
+        self.assertEqual(json.loads(p.fields["image_reference"]), refs)
+        self.assertEqual(json.loads(p.fields["lora"]), {"name": "l", "path": "hub/x"})
+        for bad in ({"image_url": "/etc/passwd"}, ["not an object"], "https://x/a.png"):
+            with self.subTest(str(bad)), self.assertRaises(JsonDataException):
+                core.VideoPayload.from_json_msg({"prompt": "p", "image_reference": bad})
+
+    def test_uploads_count_against_the_request_budget(self):
+        big = "A" * (core.MAX_REQUEST_UPLOAD_BYTES // 3 * 4 // 4)
+        with self.assertRaisesRegex(JsonDataException, "in total"):
+            core.VideoPayload.from_json_msg(
+                {"prompt": "p", "input_references": [big] * 5,
+                 "video_reference": {"video_url": "data:video/mp4;base64," + big}})
+
+    def test_workload_is_pixels_frames_and_outputs(self):
+        ref = core.VideoPayload.for_test().count_workload()
+        self.assertEqual(ref, core.BENCHMARK_MAX_TOKENS)
+        w = lambda **f: core._video_workload(f)   # noqa: E731
+        self.assertEqual(w(), ref)                                      # model's own size
+        self.assertEqual(w(width=832, height=480, num_frames=66), 2 * ref)
+        self.assertEqual(w(size="832x480", num_frames=33, num_outputs_per_prompt=2), 2 * ref)
+        self.assertEqual(w(width=832, height=480, seconds="4", fps=16),
+                         core._in_request_units(832 * 480 * 64, core.REF_VIDEO_PIXELS * 33))
+        for bad in ({"width": "x", "height": 5}, {"num_frames": -1}, {"seconds": "a"},
+                    {"size": "9" * 400 + "x1"}, {"num_outputs_per_prompt": "9" * 5000}):
+            with self.subTest(str(bad)[:30]):
+                self.assertGreaterEqual(core._video_workload(bad), FLOOR)
