@@ -36,6 +36,12 @@ so they must be an http(s) URL or a `data:` URI; anything else, a file path incl
 refused. http(s) URLs are fetched by the engine from inside the instance and are not
 filtered here, as with `image_url` on chat.
 
+`lora` (on image and video routes) and `frame_interpolation_model_path` (on video) are
+different: they name files already on the instance, and are passed through as given. Put
+a LoRA there by baking it into a custom image (recommended), or by fetching it with the
+provisioning script on every instance that needs it; a speech voice can be delivered
+the same way.
+
 vLLM-Omni reads an edit mask from `mask_image`, not the `mask` the OpenAI API names, so
 a `mask` is not applied there.
 
