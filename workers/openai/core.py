@@ -1,6 +1,6 @@
 """Shared core for the OpenAI-compatible workers (vllm/sglang/llama/openai).
 
-They all proxy the same /v1/completions + /v1/chat/completions API, so the logic lives
+They all proxy the same OpenAI-compatible API, so the logic lives
 here and the per-engine adapters just pass an EngineDefaults. Every default is
 env-overridable: the image is version-locked to the engine, so it owns the
 engine/version-specific values (log path, health endpoint, log grammar)."""
@@ -95,22 +95,13 @@ MAX_REQUEST_MULTIPLE = 8.0
 REF_IMAGE_PIXELS = REF_IMAGE_SIDE ** 2
 REF_SPEECH_CHARS = 500
 CHARS_PER_TOKEN = 4
-MAX_IMAGES = 10                     # the spec's ceiling on `n`
-MAX_IMAGE_SIDE = 16384
 REF_VIDEO_WIDTH, REF_VIDEO_HEIGHT, REF_VIDEO_FRAMES = 832, 480, 33
-REF_VIDEO_FPS = 24                  # the engine's default
+REF_VIDEO_FPS = 24                  # a typical default; the engine's is per model
 
 
 def _in_request_units(size: float, reference: float) -> float:
     multiple = min(max(size / reference, MIN_REQUEST_MULTIPLE), MAX_REQUEST_MULTIPLE)
     return BENCHMARK_MAX_TOKENS * multiple
-
-
-def _bounded_int(value: Any, low: int, high: int, default: int) -> int:
-    try:
-        return min(max(int(value), low), high)
-    except (TypeError, ValueError, OverflowError):
-        return default
 
 
 def _number(value: Any, default: float) -> float:
@@ -173,11 +164,8 @@ def _file_parts(values: Any, names: Any, default: str, types: Dict[str, str],
 
 
 # WAV is read exactly; other formats are estimated from a typical byte rate.
-AUDIO_BYTES_PER_SECOND = {
-    "wav": 32000, "flac": 12000, "mp3": 16000, "mpeg": 16000, "mpga": 16000,
-    "m4a": 16000, "mp4": 16000, "ogg": 8000, "webm": 8000,
-}
-DEFAULT_AUDIO_BYTES_PER_SECOND = 16000
+AUDIO_BYTES_PER_SECOND = {"wav": 32000, "flac": 12000, "ogg": 8000, "webm": 8000}
+DEFAULT_AUDIO_BYTES_PER_SECOND = 16000     # mp3, m4a/mp4
 
 
 def _audio_seconds(raw: bytes, filename: str) -> float:
@@ -425,13 +413,11 @@ def speech_batch_request_parser(request: Any) -> Dict[str, Any]:
 
 def _image_workload(data: Dict[str, Any]) -> float:
     """n x pixels; `size` is "WxH", or "auto" when the engine decides."""
-    n = _bounded_int(data.get("n") or 1, 1, MAX_IMAGES, 1)
     pixels = REF_IMAGE_PIXELS
     w, sep, h = str(data.get("size") or "").lower().partition("x")
     if sep:
-        pixels = (_bounded_int(w, 1, MAX_IMAGE_SIDE, 1024)
-                  * _bounded_int(h, 1, MAX_IMAGE_SIDE, 1024))
-    return _in_request_units(n * pixels, REF_IMAGE_PIXELS)
+        pixels = _number(w, REF_IMAGE_SIDE) * _number(h, REF_IMAGE_SIDE)
+    return _in_request_units(_number(data.get("n"), 1) * pixels, REF_IMAGE_PIXELS)
 
 
 def _speech_workload(data: Dict[str, Any]) -> float:
@@ -439,7 +425,7 @@ def _speech_workload(data: Dict[str, Any]) -> float:
     text = data.get("input")
     chars = len(text) if isinstance(text, str) else 0
     refs = _flatten([data.get("ref_audio"), data.get("ref_audio_2")])
-    chars += REF_SPEECH_CHARS * sum(1 for r in refs if isinstance(r, str) and r)
+    chars += REF_SPEECH_CHARS * sum(1 for r in refs if isinstance(r, str))
     return _in_request_units(chars, REF_SPEECH_CHARS)
 
 
@@ -459,12 +445,12 @@ def _speech_batch_workload(data: Dict[str, Any]) -> float:
 def _chat_batch_workload(data: Dict[str, Any]) -> float:
     messages = data.get("messages")
     count = len(messages) if isinstance(messages, list) else 0
-    tokens = _number(data.get("max_tokens") or 0, 0) * count
+    tokens = _number(data.get("max_tokens"), 0) * count
     return _in_request_units(tokens, BENCHMARK_MAX_TOKENS)
 
 
 def _audio_generate_workload(data: Dict[str, Any]) -> float:
-    seconds = _number(data.get("audio_length") or REF_AUDIO_GEN_SECONDS, REF_AUDIO_GEN_SECONDS)
+    seconds = _number(data.get("audio_length"), REF_AUDIO_GEN_SECONDS)
     return _in_request_units(seconds, REF_AUDIO_GEN_SECONDS)
 
 
@@ -481,49 +467,38 @@ def _video_workload(data: Dict[str, Any]) -> float:
         frames = _number(data["num_frames"], REF_VIDEO_FRAMES)
     elif data.get("seconds"):
         frames = (_number(data["seconds"], 1)
-                  * _number(data.get("fps") or REF_VIDEO_FPS, REF_VIDEO_FPS))
-    outputs = _number(data.get("num_outputs_per_prompt") or 1, 1)
+                  * _number(data.get("fps"), REF_VIDEO_FPS))
+    outputs = _number(data.get("num_outputs_per_prompt"), 1)
     return _in_request_units(pixels * frames * outputs,
                              REF_VIDEO_WIDTH * REF_VIDEO_HEIGHT * REF_VIDEO_FRAMES)
 
 
-def _is_tokens(value: Any) -> bool:
-    return isinstance(value, list) and bool(value) and all(isinstance(t, int) for t in value)
-
-
 def _score_input_chars(value: Any) -> int:
-    """Text, token ids, or a multimodal object (counted as one document)."""
-    if isinstance(value, str):
-        return len(value)
-    if _is_tokens(value):
-        return len(value) * CHARS_PER_TOKEN
-    return RERANK_DOC_CHARS if value is not None else 0
+    """Text by length; a multimodal input counts as one document."""
+    return len(value) if isinstance(value, str) else RERANK_DOC_CHARS
 
 
-def _pairs_workload(left: Any, right: Any) -> float:
-    """A reranker reads each (query, document) pair: one side against many, or two lists
-    pairwise, as the engines score them."""
-    lefts = left if isinstance(left, list) and not _is_tokens(left) else [left]
-    rights = right if isinstance(right, list) and not _is_tokens(right) else [right]
-    if len(lefts) == 1:
-        pairs = [(lefts[0], r) for r in rights]
-    elif len(rights) == 1:
-        pairs = [(item, rights[0]) for item in lefts]
-    else:
-        pairs = list(zip(lefts, rights))
-    chars = sum(_score_input_chars(a) + _score_input_chars(b) for a, b in pairs)
+def _pairs_workload(queries: List[Any], documents: Any) -> float:
+    """Each (query, document) pair a reranker reads: one query against many, or two lists
+    pairwise."""
+    documents = documents if isinstance(documents, list) else [documents]
+    pairs = ([(queries[0], d) for d in documents] if len(queries) == 1
+             else list(zip(queries, documents)))
+    chars = sum(_score_input_chars(q) + _score_input_chars(d) for q, d in pairs)
     return _in_request_units(chars, REF_RERANK_CHARS)
 
 
 def _rerank_workload(data: Dict[str, Any]) -> float:
-    return _pairs_workload(data.get("query"), data.get("documents"))
+    return _pairs_workload([data.get("query")], data.get("documents"))
 
 
 def _score_workload(data: Dict[str, Any]) -> float:
-    """vLLM takes text_1/text_2, queries/items or data_1/data_2."""
+    """vLLM's shapes: queries with documents or items, text_1/text_2, data_1/data_2."""
     def first(*keys):
         return next((data[k] for k in keys if data.get(k) is not None), None)
-    return _pairs_workload(first("text_1", "queries", "data_1"), first("text_2", "items", "data_2"))
+    queries = first("queries", "text_1", "data_1")
+    return _pairs_workload(queries if isinstance(queries, list) else [queries],
+                           first("documents", "items", "text_2", "data_2"))
 
 
 def _embeddings_workload(data: Dict[str, Any]) -> float:
@@ -589,6 +564,9 @@ def build_config(defaults: EngineDefaults, model_server_url: str = MODEL_SERVER_
     # Relative path resolves against the server url+port; a full URL is used as-is.
     healthcheck_url = os.environ.get("MODEL_HEALTH_ENDPOINT", "/health")
     benchmarked = benchmark_route()
+    if benchmarked not in BENCHMARKS:
+        raise RuntimeError(f"BENCHMARK_ROUTE={benchmarked!r} is not a route; expected one of "
+                           + ", ".join(BENCHMARKS))
 
     def route(path, **kw):
         if path == benchmarked:

@@ -12,7 +12,7 @@ All worker logic lives in `core.py`. The per-engine backends `vllm`, `sglang` an
 | `/v1/chat/completions/batch` | JSON (`messages`: a list of conversations) | JSON |
 | `/v1/embeddings` | JSON | JSON |
 | `/v1/rerank` | JSON (`query`, `documents`) | JSON |
-| `/v1/score` | JSON (`text_1`/`text_2`, `queries`/`items` or `data_1`/`data_2`) | JSON |
+| `/v1/score` | JSON (`queries` with `documents` or `items`, `text_1`/`text_2`, or `data_1`/`data_2`) | JSON |
 | `/v1/audio/speech` | JSON (voice-clone `ref_audio`: http(s) URL or `data:` URI) | audio bytes |
 | `/v1/audio/speech/batch` | JSON (`items`, each a speech request; `ref_audio` on the batch or an item) | JSON, audio base64'd per item |
 | `/v1/audio/generate` | JSON (`input` is the prompt; `audio_length` in seconds) | audio bytes |
@@ -176,7 +176,7 @@ python -m workers.openai.client --completion --endpoint <ENDPOINT_NAME> --model 
 ### The other routes
 
 One call to the route, printing the result or saving returned media to `--out` (default:
-the current directory). `--model` is optional here: the worker fills in its own.
+the current directory). `--model` is optional here: engines serve their one model when none is named.
 
 ```bash
 python -m workers.openai.client --embeddings --endpoint <ENDPOINT_NAME>

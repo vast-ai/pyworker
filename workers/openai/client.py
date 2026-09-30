@@ -175,8 +175,7 @@ RERANK_DOCS = ["To recover your account, use the 'Forgot login' link and follow 
                "Our office is closed on public holidays.",
                "Passwords must be at least 12 characters long.",
                "The best pizza in Naples is a matter of fierce debate."]
-EXTENSIONS = {"audio/wav": "wav", "audio/x-wav": "wav", "audio/mpeg": "mp3", "audio/flac": "flac",
-              "audio/ogg": "ogg", "audio/opus": "opus", "video/mp4": "mp4", "image/png": "png"}
+EXTENSIONS = {"audio/wav": "wav", "video/mp4": "mp4", "image/png": "png"}
 
 
 async def call_route(client: Serverless, route: str, payload: Dict[str, Any], endpoint_name: str):
@@ -184,16 +183,19 @@ async def call_route(client: Serverless, route: str, payload: Dict[str, Any], en
     endpoint = await client.get_endpoint(name=endpoint_name)
     log.debug("POST %s %s", route, json.dumps(payload)[:500])
     resp = await endpoint.request(route, payload)
+    if not resp.get("ok"):
+        sys.exit(f"{route}: HTTP {resp.get('status')}: {(resp.get('text') or '')[:500]}")
     return resp["response"], resp.get("content_type")
 
 
-def b64_file(path: str) -> Dict[str, str]:
+def b64_file(path: str):
     with open(path, "rb") as f:
-        return {"data": base64.b64encode(f.read()).decode(), "name": os.path.basename(path)}
+        return base64.b64encode(f.read()).decode(), os.path.basename(path)
 
 
 def save(out_dir: str, stem: str, data: bytes, content_type: Optional[str]) -> None:
     ext = EXTENSIONS.get((content_type or "").split(";")[0], "bin")
+    os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"{stem}.{ext}")
     with open(path, "wb") as f:
         f.write(data)
@@ -201,10 +203,8 @@ def save(out_dir: str, stem: str, data: bytes, content_type: Optional[str]) -> N
 
 
 async def demo_route(client: Serverless, args: argparse.Namespace) -> None:
-    """Run the one route mode selected on the command line."""
     model = {"model": args.model} if args.model else {}
     out = args.out
-    os.makedirs(out, exist_ok=True)
 
     if args.embeddings:
         resp, _ = await call_route(client, "/v1/embeddings", {**model, "input": [SPEECH_TEXT]}, args.endpoint)
@@ -214,8 +214,9 @@ async def demo_route(client: Serverless, args: argparse.Namespace) -> None:
         resp, _ = await call_route(client, "/v1/rerank",
                                    {**model, "query": RERANK_QUERY, "documents": RERANK_DOCS}, args.endpoint)
         print(RERANK_QUERY)
-        for r in sorted(resp.get("results", []), key=lambda r: -r["relevance_score"]):
-            print(f"  {r['relevance_score']:.3g}  {RERANK_DOCS[r['index']]}")
+        results = resp if isinstance(resp, list) else resp.get("results", [])   # SGLang: a list
+        for r in sorted(results, key=lambda r: -r.get("relevance_score", r.get("score", 0))):
+            print(f"  {r.get('relevance_score', r.get('score')):.3g}  {RERANK_DOCS[r['index']]}")
     elif args.score:
         resp, _ = await call_route(client, "/v1/score",
                                    {**model, "queries": RERANK_QUERY, "items": RERANK_DOCS}, args.endpoint)
@@ -239,8 +240,8 @@ async def demo_route(client: Serverless, args: argparse.Namespace) -> None:
                 print(f"item {r.get('index')}: {r.get('error')}")
     elif args.transcribe or args.translate:
         route = "/v1/audio/transcriptions" if args.transcribe else "/v1/audio/translations"
-        f = b64_file(args.transcribe or args.translate)
-        resp, _ = await call_route(client, route, {**model, "file": f["data"], "filename": f["name"]},
+        data, name = b64_file(args.transcribe or args.translate)
+        resp, _ = await call_route(client, route, {**model, "file": data, "filename": name},
                                    args.endpoint)
         print(resp.get("text") if isinstance(resp, dict) else resp)
     elif args.image:
@@ -249,9 +250,9 @@ async def demo_route(client: Serverless, args: argparse.Namespace) -> None:
                                    args.endpoint)
         save(out, "image", base64.b64decode(resp["data"][0]["b64_json"]), "image/png")
     elif args.edit:
-        f = b64_file(args.edit)
+        data, name = b64_file(args.edit)
         resp, _ = await call_route(client, "/v1/images/edits",
-                                   {**model, "image": f["data"], "filename": f["name"], "prompt": EDIT_PROMPT},
+                                   {**model, "image": data, "filename": name, "prompt": EDIT_PROMPT},
                                    args.endpoint)
         save(out, "edit", base64.b64decode(resp["data"][0]["b64_json"]), "image/png")
     elif args.audio_generate:
@@ -262,8 +263,8 @@ async def demo_route(client: Serverless, args: argparse.Namespace) -> None:
     elif args.video:
         payload = {**model, "prompt": VIDEO_PROMPT, "width": 832, "height": 480, "num_frames": 33}
         if args.image_file:
-            f = b64_file(args.image_file)
-            payload.update(input_reference=f["data"], input_reference_filename=f["name"])
+            data, name = b64_file(args.image_file)
+            payload.update(input_reference=data, input_reference_filename=name)
         resp, ctype = await call_route(client, "/v1/videos/sync", payload, args.endpoint)
         save(out, "video-i2v" if args.image_file else "video", resp, ctype)
     elif args.chat_batch:
@@ -589,6 +590,21 @@ class APIDemo:
 
 
 # ---------------------- CLI ----------------------
+ROUTE_FLAGS = {
+    "--chat-batch": "Test /v1/chat/completions/batch",
+    "--embeddings": "Test /v1/embeddings",
+    "--rerank": "Test /v1/rerank",
+    "--score": "Test /v1/score",
+    "--speech": "Test /v1/audio/speech",
+    "--speech-batch": "Test /v1/audio/speech/batch",
+    "--transcribe FILE": "Test /v1/audio/transcriptions with FILE",
+    "--translate FILE": "Test /v1/audio/translations with FILE",
+    "--image": "Test /v1/images/generations",
+    "--edit FILE": "Test /v1/images/edits on FILE",
+    "--audio-generate": "Test /v1/audio/generate",
+    "--video": "Test /v1/videos/sync",
+}
+
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Vast vLLM Demo (Serverless SDK)")
     p.add_argument("--model", help=f"Model to use for requests (default: {DEFAULT_MODEL} for "
@@ -605,23 +621,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     modes.add_argument("--chat-stream", action="store_true", help="Test chat completions endpoint with streaming")
     modes.add_argument("--tools", action="store_true", help="Test function calling with ls tool (non-streaming+streamed phases)")
     modes.add_argument("--interactive", action="store_true", help="Start interactive streaming chat session")
-    modes.add_argument("--chat-batch", action="store_true", help="Test /v1/chat/completions/batch")
-    modes.add_argument("--embeddings", action="store_true", help="Test /v1/embeddings")
-    modes.add_argument("--rerank", action="store_true", help="Test /v1/rerank")
-    modes.add_argument("--score", action="store_true", help="Test /v1/score")
-    modes.add_argument("--speech", action="store_true", help="Test /v1/audio/speech")
-    modes.add_argument("--speech-batch", action="store_true", help="Test /v1/audio/speech/batch")
-    modes.add_argument("--transcribe", metavar="FILE", help="Test /v1/audio/transcriptions with FILE")
-    modes.add_argument("--translate", metavar="FILE", help="Test /v1/audio/translations with FILE")
-    modes.add_argument("--image", action="store_true", help="Test /v1/images/generations")
-    modes.add_argument("--edit", metavar="FILE", help="Test /v1/images/edits on FILE")
-    modes.add_argument("--audio-generate", action="store_true", help="Test /v1/audio/generate")
-    modes.add_argument("--video", action="store_true", help="Test /v1/videos/sync")
+    for flag, text in ROUTE_FLAGS.items():
+        name, _, metavar = flag.partition(" ")
+        if metavar:
+            modes.add_argument(name, metavar=metavar, help=text)
+        else:
+            modes.add_argument(name, action="store_true", help=text)
     return p
 
 
-ROUTE_MODES = ("chat_batch", "embeddings", "rerank", "score", "speech", "speech_batch", "transcribe", "translate",
-               "image", "edit", "audio_generate", "video")
+ROUTE_MODES = [f.split()[0][2:].replace("-", "_") for f in ROUTE_FLAGS]
 
 
 async def main_async():

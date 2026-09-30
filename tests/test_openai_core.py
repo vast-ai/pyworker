@@ -178,11 +178,15 @@ class TestImageEdit(unittest.TestCase):
         self.assertEqual([(f[0], f[2]) for f in body["image"]],
                          [("a.png", "image/png"), ("b.jpg", "image/jpeg")])
         self.assertEqual(body["mask"], [("m.webp", PNG, "image/webp")])
+        self.assertNotIn("mask_filename", body)
         self.assertEqual(body["prompt"], "p")
         with self.assertRaises(JsonDataException):
             ImageEditPayload.from_json_msg({"image": b64(PNG), "filename": "x.wav", "prompt": "p"})
         with self.assertRaises(JsonDataException):
             ImageEditPayload.from_json_msg({"image": [b64(PNG)] * 17, "prompt": "p"})
+        body = ImageEditPayload.from_json_msg(
+            {"image": [b64(PNG), b64(PNG)], "filename": "a.png", "prompt": "p"}).files
+        self.assertEqual([f[0] for f in body["image"]], ["a.png", "image.png"])
 
     def test_a_url_stands_in_for_an_upload(self):
         body = ImageEditPayload.from_json_msg(
@@ -275,6 +279,7 @@ class TestReferences(unittest.TestCase):
         batch = handlers()["/v1/audio/speech/batch"].request_parser
         self.assertNotIn("ref_audio", speech({"input": "hi", "ref_audio": ""}))
         self.assertNotIn("ref_audio", batch({"items": [{"input": "a", "ref_audio": ""}]})["items"][0])
+        self.assertNotIn("ref_audio", batch({"items": [{"input": "a"}], "ref_audio": ""}))
         self.assertNotIn("url", ImageEditPayload.from_json_msg(
             {"image": b64(), "url": "", "prompt": "p"}).fields)
 
@@ -307,10 +312,11 @@ class TestHandlerTable(unittest.TestCase):
         self.assertEqual(ALL_ROUTES - set(BENCHMARKS), set())
 
     def test_an_unusable_benchmark_route_is_refused(self):
-        for env in ({"BENCHMARK_ROUTE": "/v1/images/variations"},
-                    {"BENCHMARK_ROUTE": "/v1/audio/speech", "OPENAI_ROUTES": "/v1/completions"}):
+        for env, says in [({"BENCHMARK_ROUTE": "/v1/audio/speach"}, "not a route"),
+                          ({"BENCHMARK_ROUTE": "/v1/audio/speech",
+                            "OPENAI_ROUTES": "/v1/completions"}, "not served")]:
             with self.subTest(env), mock.patch.dict(os.environ, env), \
-                    self.assertRaises(RuntimeError):
+                    self.assertRaisesRegex(RuntimeError, says):
                 handlers()
 
 
@@ -380,18 +386,20 @@ class TestWorkload(unittest.TestCase):
         q, d = "q" * benchmark.RERANK_QUERY_CHARS, "d" * benchmark.RERANK_DOC_CHARS
         docs = [d] * benchmark.RERANK_DOCS
         for route, data in [("/v1/rerank", {"query": q, "documents": docs}),
+                            ("/v1/score", {"queries": q, "documents": docs}),
+                            ("/v1/score", {"queries": q, "items": docs}),
                             ("/v1/score", {"text_1": q, "text_2": docs}),
-                            ("/v1/score", {"queries": [q] * len(docs), "items": docs}),
-                            ("/v1/score", {"data_1": docs, "data_2": q}),
-                            ("/v1/rerank", {"query": [1] * (len(q) // core.CHARS_PER_TOKEN),
-                                            "documents": docs}),
-                            ("/v1/rerank", {"query": q, "documents": [
-                                {"content": [{"type": "image_url", "image_url": {"url": "u"}}]}] * len(docs)})]:
+                            ("/v1/score", {"data_1": [q] * len(docs), "data_2": docs})]:
             with self.subTest((route, list(data))):
                 self.assertEqual(self.calc(route)(data), ONE_REQUEST)
-        tokens = [1] * (benchmark.RERANK_DOC_CHARS // core.CHARS_PER_TOKEN)
-        self.assertAlmostEqual(self.calc("/v1/rerank")({"query": q, "documents": [tokens] * len(docs)}),
-                               ONE_REQUEST, delta=5)
+        pairwise = self.calc("/v1/score")({"queries": [q, q * 10], "items": [d, d]})
+        self.assertEqual(pairwise, core._in_request_units(len(q) * 11 + 2 * len(d),
+                                                          benchmark.REF_RERANK_CHARS))
+        image = {"type": "image_url", "image_url": {"url": "u"}}
+        one_query = self.calc("/v1/rerank")({"query": [{"type": "text", "text": q}, image],
+                                             "documents": docs})
+        self.assertEqual(one_query, core._in_request_units(
+            len(docs) * 2 * benchmark.RERANK_DOC_CHARS, benchmark.REF_RERANK_CHARS))
 
     def test_each_clone_reference_adds_one_request(self):
         calc, base = self.calc("/v1/audio/speech"), {"input": "x" * 500}
@@ -421,13 +429,15 @@ class TestWorkload(unittest.TestCase):
         self.assertEqual(w(size="832x480", num_frames=33, num_outputs_per_prompt=2), 2 * ONE_REQUEST)
         self.assertEqual(w(size="1664x480", width=64, height=64), 2 * ONE_REQUEST)   # size wins
         self.assertEqual(w(seconds="2", fps="16.5"), ONE_REQUEST)
+        self.assertEqual(w(seconds="2"), core._in_request_units(48, 33))    # 24 fps
 
     def test_transcription_counts_seconds_of_audio(self):
         self.assertAlmostEqual(core._audio_seconds(_wav(7.5, rate=48000), "a.wav"), 7.5, places=2)
         raw = b"\x1aE\xdf\xa3" + b"\x00" * 80000
         self.assertAlmostEqual(core._audio_seconds(raw, "a.webm"),
                                len(raw) / core.AUDIO_BYTES_PER_SECOND["webm"], places=2)
-        self.assertEqual(set(core.AUDIO_TYPES) - set(core.AUDIO_BYTES_PER_SECOND), set())
+        self.assertAlmostEqual(core._audio_seconds(raw, "a.mp3"),
+                               len(raw) / core.DEFAULT_AUDIO_BYTES_PER_SECOND, places=2)
 
     def test_malformed_input_is_priced_without_raising(self):
         cases = {
