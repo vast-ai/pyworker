@@ -1,10 +1,5 @@
-"""Benchmark payloads for the OpenAI worker, one per route that can be benchmarked.
-
-BENCHMARK_ROUTE names the route a deployment is benchmarked on (default /v1/completions,
-so LLM workers benchmark exactly what they did before). Every benchmark request weighs
-one reference request in the worker's workload units, so the score means the same thing
-whichever route is benchmarked.
-"""
+"""Benchmark payloads, one per route. Each weighs one reference request, so the score
+means the same whichever route BENCHMARK_ROUTE names."""
 
 import os
 import random
@@ -27,14 +22,9 @@ WORD_LIST = nltk.corpus.words.words()
 
 REF_IMAGE_SIDE = 1024      # one reference image, per side
 REF_AUDIO_SECONDS = 30.0   # one reference clip: one Whisper window
-REF_AUDIO_GEN_SECONDS = 10.0   # one reference generated clip (/v1/audio/generate)
-# One reference video: a short clip at a size every Wan-family pipeline accepts
-# (sides a multiple of 32, 4k+1 frames).
-REF_VIDEO_WIDTH, REF_VIDEO_HEIGHT, REF_VIDEO_FRAMES = 832, 480, 33
+REF_AUDIO_GEN_SECONDS = 10.0
 BATCH_BENCHMARK_ITEMS = 4  # a batch benchmark splits one reference request this many ways
-# One reference embedding request. Sized for a 256-token encoder (all-MiniLM-L6): engines
-# reject an over-length input rather than truncate it, and tokens per character vary
-# with the draw, so a reference near the limit fails by luck.
+# Sized for a 256-token encoder: engines refuse an over-length input.
 REF_EMBED_CHARS = int(os.environ.get("BENCHMARK_EMBED_CHARS") or 600)   # empty = unset
 
 
@@ -65,13 +55,8 @@ def _voice() -> dict:
 
 
 def synthetic_png(side: int = REF_IMAGE_SIDE, tile: int = 64) -> bytes:
-    """A random RGB PNG, built from the stdlib: the input to the edit benchmark.
-
-    A diffusion edit's cost depends on resolution and steps, not on the pixels, so
-    synthetic input measures the same work as a photograph. Tiled from one random block
-    so it is cheap to build (for_test() runs inside the timed window), and re-rolled per
-    call because engines cache multimodal input by content hash.
-    """
+    """A random RGB PNG, tiled so it is cheap to build and new per call (engines cache
+    by content hash)."""
     rows = [os.urandom(tile * 3) * (side // tile) for _ in range(tile)]
     raw = b"".join(b"\x00" + rows[y % tile] for y in range(side))   # filter 0 per row
 
@@ -84,16 +69,13 @@ def synthetic_png(side: int = REF_IMAGE_SIDE, tile: int = 64) -> bytes:
             + chunk(b"IDAT", zlib.compress(raw, 1)) + chunk(b"IEND", b""))
 
 
-# Real speech for the transcription benchmark: noise leaves the decoder idle, which
-# overstated throughput 2x on vLLM whisper-large-v3 and 27x on faster-whisper. 10.7 s of
-# our own text, synthesised with openbmb/VoxCPM2 (Apache-2.0), 16 kHz mono 16-bit.
+# Real speech: noise leaves the decoder idle and overstates throughput. See benchmark_speech.md.
 _SPEECH_PATH = Path(__file__).with_name("benchmark_speech.wav")
 _speech = None
 
 
 def benchmark_speech(seconds: float = REF_AUDIO_SECONDS) -> bytes:
-    """The speech clip tiled to `seconds`, as WAV. Its last few samples are random per
-    call, because engines cache multimodal input by content hash."""
+    """The speech clip tiled to `seconds`, with a random tail (engines cache by content hash)."""
     global _speech
     if _speech is None:
         with wave.open(str(_SPEECH_PATH)) as w:
@@ -131,8 +113,6 @@ def speech_benchmark_generator() -> dict:
 
 
 def chat_batch_benchmark_generator() -> dict:
-    """One reference request split across a batch: BATCH_BENCHMARK_ITEMS conversations
-    whose max_tokens sum to the chat benchmark's."""
     k = BATCH_BENCHMARK_ITEMS
     return {**_model(),
             "messages": [[{"role": "user", "content": " ".join(random.choices(WORD_LIST, k=250 // k))}]
@@ -141,8 +121,6 @@ def chat_batch_benchmark_generator() -> dict:
 
 
 def speech_batch_benchmark_generator() -> dict:
-    """One reference request split across a batch: the items' text sums to the speech
-    benchmark's."""
     k = BATCH_BENCHMARK_ITEMS
     return {**_model(), "items": [{"input": _words(500 // k)} for _ in range(k)], **_voice()}
 
@@ -172,8 +150,7 @@ BENCHMARKS = {
     "/v1/chat/completions/batch": Benchmark(10, 3, chat_batch_benchmark_generator),
     "/v1/audio/generate": Benchmark(2, 1, audio_generate_benchmark_generator),
     "/v1/images/generations": Benchmark(2, 1, images_benchmark_generator),
-    # Uploads: the payload class builds these. Every served route has a benchmark, so a
-    # deployment narrowed to any one route (an edit-only model, say) can become ready.
+    # Upload routes: the payload class builds these.
     "/v1/images/edits": Benchmark(2, 1),
     "/v1/audio/transcriptions": Benchmark(4, 2),
     "/v1/audio/translations": Benchmark(4, 2),

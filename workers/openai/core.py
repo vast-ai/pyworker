@@ -8,6 +8,7 @@ engine/version-specific values (log path, health endpoint, log grammar)."""
 import base64
 import binascii
 import json
+import math
 import os
 import re
 import wave
@@ -26,9 +27,6 @@ from workers.openai.benchmark import (
     REF_AUDIO_SECONDS,
     REF_EMBED_CHARS,
     REF_IMAGE_SIDE,
-    REF_VIDEO_FRAMES,
-    REF_VIDEO_HEIGHT,
-    REF_VIDEO_WIDTH,
     resolve_model_name as _resolve_model_name,
     benchmark_speech,
     synthetic_png,
@@ -64,16 +62,12 @@ def request_parser(request):
 DEFAULT_AUDIO_FILENAME = "audio.wav"
 DEFAULT_IMAGE_FILENAME = "image.png"
 
-# Uploads are buffered, base64-decoded and re-encoded before the SDK checks the request
-# signature, so they are bounded here: per file (25 MiB is the OpenAI limit) and per
-# request, across every file and inline reference in it.
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+# Uploads are decoded before the SDK checks the signature, so they are bounded first.
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024        # per file: the OpenAI limit
 MAX_REQUEST_UPLOAD_BYTES = 64 * 1024 * 1024
 MAX_UPLOAD_FILES = 16
 
-# The content type is chosen from the extension, and engines pick a decoder from it, so
-# only the formats each spec route accepts are allowed -- and the table is fixed rather
-# than read from the host's mime database, which differs between images.
+# Engines pick a decoder from the content type, which comes from the extension.
 AUDIO_TYPES = {
     "flac": "audio/flac", "m4a": "audio/mp4", "mp3": "audio/mpeg", "mp4": "audio/mp4",
     "mpeg": "audio/mpeg", "mpga": "audio/mpeg", "ogg": "audio/ogg", "wav": "audio/wav",
@@ -82,43 +76,27 @@ AUDIO_TYPES = {
 IMAGE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
                "webp": "image/webp"}
 VIDEO_TYPES = {"mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm"}
-# mp4 and webm are video where a field takes either: an extension has one content type.
-MEDIA_TYPES = {**AUDIO_TYPES, **IMAGE_TYPES, **VIDEO_TYPES}
 VISUAL_TYPES = {**IMAGE_TYPES, **VIDEO_TYPES}
+MEDIA_TYPES = {**AUDIO_TYPES, **VISUAL_TYPES}     # mp4 and webm are video
+JSON_TYPES = {"json": "application/json"}
 
-# Reference fields an engine resolves for itself (url, ref_audio) accept only http(s) URLs
-# and data: URIs. Anything else is refused -- a bare path, and bare base64 too, since "/" is
-# a base64 character and a padded path decodes -- so no value reaches the engine as
-# something it might open on the instance's own disk. http(s) URLs are fetched by the
-# engine from inside the instance and are not filtered here, as with image_url on chat.
+# References are fetched by the engine: only these schemes, so never a path on the instance.
 REFERENCE_SCHEMES = ("http", "https", "data")
 MAX_DATA_URI_PREFIX = 128           # "data:audio/wav;base64" and the like
 
-# Workload unit. The SDK's wait_time divides the in-flight workload of EVERY route by a
-# max_throughput measured on one route (BENCHMARK_ROUTE), and 429s any request
-# arriving while that exceeds max_queue_time. So every route must count in the same
-# unit, or one upload (bytes, pixels) 429s the whole worker.
-#
-# Non-token routes count in benchmark requests: one reference-sized request weighs the
-# same as one benchmark completion, and no request weighs more than
-# MAX_REQUEST_MULTIPLE of them. The reference sizes are ESTIMATES, not measurements --
-# the clamp is what keeps the gate safe, and it does not depend on them being right.
+# The SDK divides every route's in-flight workload by the throughput of the benchmark
+# route alone, so every route counts in benchmark requests, clamped.
 BENCHMARK_MAX_TOKENS = 500          # completions_benchmark_generator's max_tokens
 MIN_REQUEST_MULTIPLE = 0.1
 MAX_REQUEST_MULTIPLE = 8.0
 
-REF_IMAGE_PIXELS = REF_IMAGE_SIDE ** 2   # also used when `size` is absent or "auto"
-REF_SPEECH_CHARS = 500              # text to synthesise; each clone reference adds one
-# REF_AUDIO_SECONDS and REF_EMBED_CHARS live in benchmark.py, whose payloads must be
-# exactly one of each.
-CHARS_PER_TOKEN = 4                 # sizes pre-tokenised embedding input
+REF_IMAGE_PIXELS = REF_IMAGE_SIDE ** 2
+REF_SPEECH_CHARS = 500
+CHARS_PER_TOKEN = 4
 MAX_IMAGES = 10                     # the spec's ceiling on `n`
 MAX_IMAGE_SIDE = 16384
-MAX_AUDIO_GEN_SECONDS = 3600
-REF_VIDEO_PIXELS = REF_VIDEO_WIDTH * REF_VIDEO_HEIGHT
-REF_VIDEO_FPS = 16                  # frames per second when `seconds` is given without `fps`
-MAX_VIDEO_FRAMES = 100_000
-MAX_VIDEO_OUTPUTS = 10              # the engine's ceiling on num_outputs_per_prompt
+REF_VIDEO_WIDTH, REF_VIDEO_HEIGHT, REF_VIDEO_FRAMES = 832, 480, 33
+REF_VIDEO_FPS = 24                  # the engine's default
 
 
 def _in_request_units(size: float, reference: float) -> float:
@@ -133,22 +111,26 @@ def _bounded_int(value: Any, low: int, high: int, default: int) -> int:
         return default
 
 
-def _decode_b64(value: Any, field: str) -> bytes:
-    """A base64 string -> bytes, or a JsonDataException naming the offending field.
+def _number(value: Any, default: float) -> float:
+    try:
+        n = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return n if math.isfinite(n) else default
 
-    Accepts a data: URI and line-wrapped base64 (both common encoder outputs). The size
-    limit is checked on the encoded length, before anything is decoded.
-    """
+
+def _decode_b64(value: Any, field: str) -> bytes:
+    """base64 or a data: URI -> bytes; the size is checked before decoding."""
     if not isinstance(value, str):
         raise JsonDataException({field: "must be a base64 string"})
     start = 0
     if value[:5].lower() == "data:":
-        comma = value.find(",", 0, MAX_DATA_URI_PREFIX)    # bounded: never scans the data
+        comma = value.find(",", 0, MAX_DATA_URI_PREFIX)
         if comma < 0:
             raise JsonDataException({field: "malformed data: URI"})
         start = comma + 1
     size = len(value) - start
-    if size > (MAX_UPLOAD_BYTES + 2) // 3 * 4 + size // 76 * 2 + 4:
+    if size > (MAX_UPLOAD_BYTES + 2) // 3 * 4 + size // 76 * 2 + 4:   # + line breaks
         raise JsonDataException({field: f"larger than {MAX_UPLOAD_BYTES} bytes"})
     value = re.sub(r"\s+", "", value[start:])
     try:
@@ -164,17 +146,11 @@ def _decode_b64(value: Any, field: str) -> bytes:
 
 def _file_part(raw: bytes, filename: Any, default: str, types: Dict[str, str],
                field: str) -> tuple:
-    """(filename, bytes, content_type) -- the shape the SDK turns into a file part.
-
-    The filename is reduced to a safe basename, and its extension must be one the route
-    accepts; the content type comes from that extension.
-    """
+    """(filename, bytes, content_type), with a safe basename and an allowed extension."""
     name = os.path.basename(str(filename or "")).strip()
     name = re.sub(r"[^A-Za-z0-9._-]", "_", name).lstrip(".") or default
-    # Truncate the stem, not the name: cutting a long name mid-extension would reject a
-    # legitimate upload for having no extension at all.
     stem, dot, ext = name.rpartition(".")
-    name = (stem[:128] + dot + ext) if dot else name[:128]
+    name = (stem[:128] + dot + ext) if dot else name[:128]     # keep the extension
     ext = ext.lower() if dot else ""
     if ext not in types:
         raise JsonDataException(
@@ -183,9 +159,18 @@ def _file_part(raw: bytes, filename: Any, default: str, types: Dict[str, str],
     return (name, raw, types[ext])
 
 
-# An ASR request is priced by seconds of audio, which is what it costs and what engines
-# bill. WAV is read exactly; other containers are estimated from a per-format byte rate,
-# which is within about 2x (bitrate varies) and bounded by the clamp either way.
+def _file_parts(values: Any, names: Any, default: str, types: Dict[str, str],
+                field: str, name_field: str) -> list:
+    values = values if isinstance(values, list) else [values]
+    if len(values) > MAX_UPLOAD_FILES:
+        raise JsonDataException({field: f"at most {MAX_UPLOAD_FILES} files"})
+    names = names if isinstance(names, list) else [names]
+    names = names + [None] * (len(values) - len(names))
+    return [_file_part(_decode_b64(v, field), n, default, types, name_field)
+            for v, n in zip(values, names)]
+
+
+# WAV is read exactly; other formats are estimated from a typical byte rate.
 AUDIO_BYTES_PER_SECOND = {
     "wav": 32000, "flac": 12000, "mp3": 16000, "mpeg": 16000, "mpga": 16000,
     "m4a": 16000, "mp4": 16000, "ogg": 8000, "webm": 8000,
@@ -199,17 +184,13 @@ def _audio_seconds(raw: bytes, filename: str) -> float:
             with wave.open(BytesIO(raw)) as w:
                 return w.getnframes() / float(w.getframerate())
         except Exception:
-            pass                               # not a WAV we can read: estimate it
+            pass
     ext = str(filename).rpartition(".")[2].lower()
     per_second = AUDIO_BYTES_PER_SECOND.get(ext, DEFAULT_AUDIO_BYTES_PER_SECOND)
     return len(raw) / float(per_second)
 
 
 def _check_budget(values: List[Any], field: str) -> None:
-    """Refuse a request whose inline data, together, exceeds the per-request budget.
-
-    Checked on the encoded length, before anything is decoded.
-    """
     encoded = sum(len(v) for v in values if isinstance(v, str))
     if encoded * 3 // 4 > MAX_REQUEST_UPLOAD_BYTES:
         raise JsonDataException(
@@ -222,9 +203,7 @@ def _flatten(values: List[Any]) -> List[Any]:
 
 
 def _check_reference(value: Any, field: str) -> None:
-    """Refuse reference values that are neither an http(s) URL nor a data: URI, and a data:
-    URI over the per-file limit. The scheme is all that is checked: the engine parses the
-    rest, and refuses what it cannot fetch or decode."""
+    """Only the scheme is checked; the engine refuses what it cannot fetch or decode."""
     values = value if isinstance(value, list) else [value]
     if len(values) > MAX_UPLOAD_FILES:
         raise JsonDataException({field: f"at most {MAX_UPLOAD_FILES} values"})
@@ -235,7 +214,7 @@ def _check_reference(value: Any, field: str) -> None:
             raise JsonDataException({field: "must be a string"})
         try:
             scheme = urlparse(item).scheme
-        except ValueError:                  # e.g. an unclosed IPv6 host, "http://[::1"
+        except ValueError:                  # e.g. "http://[::1"
             scheme = None
         if scheme not in REFERENCE_SCHEMES:
             raise JsonDataException({field: "must be an http(s) URL or a data: URI"})
@@ -244,14 +223,12 @@ def _check_reference(value: Any, field: str) -> None:
 
 
 def _drop_empty(fields: Dict[str, Any], keys: tuple) -> None:
-    """An empty reference means none: drop it rather than send the engine an empty value."""
     for key in keys:
         if fields.get(key) == "":
             del fields[key]
 
 
 def _parse_body(json_msg: Any) -> Dict[str, Any]:
-    """The request as a dict, unwrapping the `input` wrapper the other routes accept."""
     if not isinstance(json_msg, dict):
         raise JsonDataException({"payload": "must be an object"})
     fields = request_parser(json_msg)
@@ -261,7 +238,6 @@ def _parse_body(json_msg: Any) -> Dict[str, Any]:
 
 
 def _fill_model(fields: Dict[str, Any]) -> None:
-    # The engine needs a model id; on-demand templates set only the engine var.
     if not fields.get("model"):
         model = _resolve_model_name()
         if model:
@@ -269,33 +245,27 @@ def _fill_model(fields: Dict[str, Any]) -> None:
 
 
 class _UploadPayload(ApiPayload):
-    """Shared by the routes whose spec body is multipart: never sent as JSON."""
+    """Sent to the engine as multipart form data: `files` as file parts, `fields` as fields."""
+
+    def __init__(self, fields: Dict[str, Any], files: Dict[str, Any]):
+        self.fields = fields
+        self.files = files
 
     def generate_payload_json(self) -> Dict[str, Any]:
-        # Never reached: generate_payload_multipart() returns a mapping, so the backend
-        # takes the multipart branch. Loud rather than posting JSON the engine rejects.
         raise NotImplementedError("this payload is sent as multipart, not JSON")
+
+    def generate_payload_multipart(self) -> Optional[Dict[str, Any]]:
+        return {**self.files, **self.fields}
 
 
 class TranscriptionPayload(_UploadPayload):
-    """base64 in, multipart out — the envelope is JSON, the OpenAI spec wants a file.
-
-        {"file": "<base64>", "filename": "a.mp3", "model": "...", "language": "en"}
-
-    `filename` sets the content type; engines infer the audio format from it. Other
-    fields pass through as form fields.
-    """
-
-    def __init__(self, fields: Dict[str, Any], audio: bytes, filename: str):
-        self.fields = fields
-        self.audio = audio
-        self.filename = filename
+    """{"file": "<base64>", "filename": "a.mp3", ...}"""
 
     @classmethod
     def for_test(cls) -> "TranscriptionPayload":
         fields: Dict[str, Any] = {}
         _fill_model(fields)
-        return cls(fields=fields, audio=benchmark_speech(), filename="benchmark.wav")
+        return cls(fields, {"file": ("benchmark.wav", benchmark_speech(), "audio/wav")})
 
     @classmethod
     def from_json_msg(cls, json_msg: Any) -> "TranscriptionPayload":
@@ -303,190 +273,125 @@ class TranscriptionPayload(_UploadPayload):
         raw = fields.pop("file", None)
         if raw is None:
             raise JsonDataException({"file": "field missing"})
-        audio = _decode_b64(raw, "file")
-        part = _file_part(audio, fields.pop("filename", None), DEFAULT_AUDIO_FILENAME,
-                          AUDIO_TYPES, "filename")
+        part = _file_part(_decode_b64(raw, "file"), fields.pop("filename", None),
+                          DEFAULT_AUDIO_FILENAME, AUDIO_TYPES, "filename")
         _fill_model(fields)
-        return cls(fields=fields, audio=audio, filename=part[0])
-
-    def generate_payload_multipart(self) -> Optional[Dict[str, Any]]:
-        part = _file_part(self.audio, self.filename, DEFAULT_AUDIO_FILENAME,
-                          AUDIO_TYPES, "filename")
-        return {"file": part, **self.fields}
+        return cls(fields, {"file": part})
 
     def count_workload(self) -> float:
-        return _in_request_units(_audio_seconds(self.audio, self.filename),
-                                 REF_AUDIO_SECONDS)
+        name, raw, _ = self.files["file"]
+        return _in_request_units(_audio_seconds(raw, name), REF_AUDIO_SECONDS)
 
 
 class ImageEditPayload(_UploadPayload):
-    """base64 in, multipart out, for /v1/images/edits.
-
-        {"image": "<b64>" | ["<b64>", ...], "filename": "a.png" | [...],
-         "mask": "<b64>", "mask_filename": "m.png", "prompt": "..."}
-
-    Engines also accept `url` (or `url[]`) instead of an upload; one of the two is
-    required.
-    """
-
-    def __init__(self, fields: Dict[str, Any], files: Dict[str, list]):
-        self.fields = fields
-        self.files = files
+    """{"image": "<b64>" | [...], "filename": ..., "mask": "<b64>", "mask_filename": ...,
+    "prompt": ...}, or `url` / `url[]` in place of `image`."""
 
     @classmethod
     def for_test(cls) -> "ImageEditPayload":
-        """One reference-sized edit, weighed by the same _image_workload as generations."""
         side = REF_IMAGE_SIDE
         fields: Dict[str, Any] = {"prompt": _words(60), "size": f"{side}x{side}", "n": 1}
         _fill_model(fields)
-        part = _file_part(synthetic_png(side), DEFAULT_IMAGE_FILENAME,
-                          DEFAULT_IMAGE_FILENAME, IMAGE_TYPES, "filename")
-        return cls(fields=fields, files={"image": [part]})
+        return cls(fields, {"image": [("image.png", synthetic_png(side), "image/png")]})
 
     @classmethod
     def from_json_msg(cls, json_msg: Any) -> "ImageEditPayload":
         fields = _parse_body(json_msg)
-        files: Dict[str, list] = {}
-
         images = fields.pop("image", None)
         names = fields.pop("filename", None)
         mask = fields.pop("mask", None)
         mask_name = fields.pop("mask_filename", None)
-        images = images if isinstance(images, list) or images is None else [images]
-        if images is not None and len(images) > MAX_UPLOAD_FILES:
-            raise JsonDataException({"image": f"at most {MAX_UPLOAD_FILES} files"})
         _drop_empty(fields, ("url", "url[]"))
         urls = [fields.get("url"), fields.get("url[]")]
-        _check_budget([*(images or []), mask, *_flatten(urls)], "image")
+        _check_budget([*_flatten([images]), mask, *_flatten(urls)], "image")
         for key in ("url", "url[]"):
             _check_reference(fields.get(key), key)
-        if images is not None:
-            names = names if isinstance(names, list) else [names]
-            names = names + [None] * (len(images) - len(names))
-            files["image"] = [
-                _file_part(_decode_b64(img, "image"), name, DEFAULT_IMAGE_FILENAME,
-                           IMAGE_TYPES, "filename")
-                for img, name in zip(images, names)
-            ]
 
+        files: Dict[str, list] = {}
+        if images is not None:
+            files["image"] = _file_parts(images, names, DEFAULT_IMAGE_FILENAME,
+                                         IMAGE_TYPES, "image", "filename")
         if mask is not None:
             files["mask"] = [_file_part(_decode_b64(mask, "mask"), mask_name,
                                         DEFAULT_IMAGE_FILENAME, IMAGE_TYPES,
                                         "mask_filename")]
-
         if not files.get("image") and not (fields.get("url") or fields.get("url[]")):
             raise JsonDataException({"image": "field missing (or pass `url`)"})
         _fill_model(fields)
-        return cls(fields=fields, files=files)
-
-    def generate_payload_multipart(self) -> Optional[Dict[str, Any]]:
-        return {**self.files, **self.fields}
+        return cls(fields, files)
 
     def count_workload(self) -> float:
         return _image_workload(self.fields)
 
 
-# /v1/videos/sync file fields: the formats each takes, and the name an unnamed upload
-# gets. `<field>_filename` names each upload, as `filename` does on image edits.
-# input_references is the one field that repeats.
+# Upload field: (accepted types, name for an unnamed upload). Each is named by
+# `<field>_filename`; only input_references repeats.
 VIDEO_FILE_FIELDS = {
     "input_reference": (VISUAL_TYPES, DEFAULT_IMAGE_FILENAME),
     "input_references": (MEDIA_TYPES, DEFAULT_IMAGE_FILENAME),
     "control_reference": (VISUAL_TYPES, DEFAULT_IMAGE_FILENAME),
     "source_video": (VIDEO_TYPES, "video.mp4"),
     "source_audio": (AUDIO_TYPES, DEFAULT_AUDIO_FILENAME),
-    "video_noise_mask": (VISUAL_TYPES, DEFAULT_IMAGE_FILENAME),
-    "audio_noise_mask": (MEDIA_TYPES, DEFAULT_AUDIO_FILENAME),
+    "video_noise_mask": (JSON_TYPES, "mask.json"),
+    "audio_noise_mask": (JSON_TYPES, "mask.json"),
 }
-REPEATED_VIDEO_FILE_FIELDS = ("input_references",)
-# Reference objects ({"image_url": ...} or {"file_id": ...}, or a list of them), and the
-# key in each that the engine fetches.
+# Reference object field: the key in it the engine fetches.
 VIDEO_REFERENCE_FIELDS = {"image_reference": "image_url", "video_reference": "video_url",
                           "audio_reference": "audio_url"}
-# Form fields the engine parses as JSON: sent as one JSON string each, since the SDK
-# would repeat a list as separate fields.
-VIDEO_JSON_FIELDS = (*VIDEO_REFERENCE_FIELDS, "lora", "extra_params")
 
 
 class VideoPayload(_UploadPayload):
-    """base64 in, form out, for /v1/videos/sync, which answers with the mp4 itself.
-
-        {"prompt": "...", "input_reference": "<b64>", "input_reference_filename": "a.png",
-         "image_reference": {"image_url": "https://..."}, "width": 832, "height": 480,
-         "num_frames": 33}
-
-    Uploads are the VIDEO_FILE_FIELDS; the other fields are form fields, as the engine
-    takes them.
-    """
-
-    def __init__(self, fields: Dict[str, Any], files: Dict[str, Any]):
-        self.fields = fields
-        self.files = files
+    """/v1/videos/sync: the engine's form fields, with uploads base64'd."""
 
     @classmethod
     def for_test(cls) -> "VideoPayload":
         fields: Dict[str, Any] = {"prompt": _words(60), "width": REF_VIDEO_WIDTH,
                                   "height": REF_VIDEO_HEIGHT, "num_frames": REF_VIDEO_FRAMES}
         _fill_model(fields)
-        return cls(fields=fields, files={})
+        return cls(fields, {})
 
     @classmethod
     def from_json_msg(cls, json_msg: Any) -> "VideoPayload":
         fields = _parse_body(json_msg)
         uploads = {name: fields.pop(name, None) for name in VIDEO_FILE_FIELDS}
         names = {name: fields.pop(f"{name}_filename", None) for name in VIDEO_FILE_FIELDS}
-        refs = {}
+        urls = []
         for name, key in VIDEO_REFERENCE_FIELDS.items():
             value = fields.get(name)
-            items = value if isinstance(value, list) else [value]
-            if value is not None and (len(items) > MAX_UPLOAD_FILES
-                                      or not all(isinstance(i, dict) for i in items)):
-                raise JsonDataException(
-                    {name: f"must be an object, or a list of at most {MAX_UPLOAD_FILES}"})
-            refs[name] = [i.get(key) for i in items if isinstance(i, dict)]
-        _check_budget([*_flatten(list(uploads.values())), *_flatten(list(refs.values()))],
-                      "input_reference")
-        for name, urls in refs.items():
-            _check_reference(urls, f"{name}.{VIDEO_REFERENCE_FIELDS[name]}")
+            if value is None:
+                continue
+            refs = value if isinstance(value, list) else [value]
+            if not all(isinstance(r, dict) for r in refs):
+                raise JsonDataException({name: "must be an object or a list of objects"})
+            _check_reference([r.get(key) for r in refs], f"{name}.{key}")
+            urls += [r.get(key) for r in refs]
+            if isinstance(value, list):
+                fields[name] = json.dumps(value)    # the SDK would repeat a list
+        _check_budget([*_flatten(list(uploads.values())), *urls], "input_references")
 
         files: Dict[str, Any] = {}
         for name, value in uploads.items():
             if value is None:
                 continue
-            repeated = name in REPEATED_VIDEO_FILE_FIELDS
-            values = value if isinstance(value, list) else [value]
-            if len(values) > (MAX_UPLOAD_FILES if repeated else 1):
-                raise JsonDataException(
-                    {name: f"at most {MAX_UPLOAD_FILES} files" if repeated else "one file"})
-            given = names[name] if isinstance(names[name], list) else [names[name]]
-            given = given + [None] * (len(values) - len(given))
+            if isinstance(value, list) and name != "input_references":
+                raise JsonDataException({name: "one file"})
             types, default = VIDEO_FILE_FIELDS[name]
-            parts = [_file_part(_decode_b64(v, name), n, default, types, f"{name}_filename")
-                     for v, n in zip(values, given)]
-            files[name] = parts if repeated else parts[0]
-
-        for name in VIDEO_JSON_FIELDS:
-            if isinstance(fields.get(name), (dict, list)):
-                fields[name] = json.dumps(fields[name])
+            parts = _file_parts(value, names[name], default, types, name, f"{name}_filename")
+            files[name] = parts if name == "input_references" else parts[0]
         _fill_model(fields)
-        return cls(fields=fields, files=files)
-
-    def generate_payload_multipart(self) -> Optional[Dict[str, Any]]:
-        return {**self.files, **self.fields}
+        return cls(fields, files)
 
     def count_workload(self) -> float:
         return _video_workload(self.fields)
 
 
 def _unwrap_input(request: Any) -> Any:
-    """The shared parser's envelope, for routes where `input` is itself a field: unwrap
-    only a dict, which is never valid text to speak or embed."""
+    """For routes where `input` is a field itself: unwrap only a dict."""
     return request["input"] if isinstance(request, dict) and isinstance(
         request.get("input"), dict) else request
 
 
 def speech_request_parser(request: Any) -> Dict[str, Any]:
-    """Validation for /v1/audio/speech, where `input` is the text to synthesise."""
     request = _unwrap_input(request)
     if not isinstance(request, dict):
         raise JsonDataException({"payload": "must be an object"})
@@ -499,8 +404,6 @@ def speech_request_parser(request: Any) -> Dict[str, Any]:
 
 
 def speech_batch_request_parser(request: Any) -> Dict[str, Any]:
-    """Validation for /v1/audio/speech/batch: `ref_audio` may be set for the batch and
-    on each item, and every one of them is checked as on /v1/audio/speech."""
     request = _unwrap_input(request)
     if not isinstance(request, dict):
         raise JsonDataException({"payload": "must be an object"})
@@ -510,6 +413,8 @@ def speech_batch_request_parser(request: Any) -> Dict[str, Any]:
     for item in (request, *items):
         _drop_empty(item, ("ref_audio",))
     refs = [item.get("ref_audio") for item in (request, *items)]
+    if any(r is not None and not isinstance(r, str) for r in refs):
+        raise JsonDataException({"ref_audio": "must be a string"})
     _check_budget(refs, "ref_audio")
     for ref in refs:
         _check_reference(ref, "ref_audio")
@@ -517,8 +422,7 @@ def speech_batch_request_parser(request: Any) -> Dict[str, Any]:
 
 
 def _image_workload(data: Dict[str, Any]) -> float:
-    """n x pixels, in request units. `size` is "WxH", or "auto" when the engine decides.
-    Both are caller-declared, so they are bounded before use."""
+    """n x pixels; `size` is "WxH", or "auto" when the engine decides."""
     n = _bounded_int(data.get("n") or 1, 1, MAX_IMAGES, 1)
     pixels = REF_IMAGE_PIXELS
     w, sep, h = str(data.get("size") or "").lower().partition("x")
@@ -528,81 +432,61 @@ def _image_workload(data: Dict[str, Any]) -> float:
     return _in_request_units(n * pixels, REF_IMAGE_PIXELS)
 
 
-def _speech_chars(data: Dict[str, Any], batch_ref: Any = None) -> int:
-    """Input text, plus one reference-sized request per voice-clone reference.
-
-    A reference costs a speaker-encoder pass the text does not account for. `ref_audio`
-    is a URL or a data: URI and may be a list, so references are counted rather than
-    measured: a URL's length says nothing about the file it names. A batch's own
-    `ref_audio` stands in for an item's.
-    """
+def _speech_workload(data: Dict[str, Any]) -> float:
+    """Text, plus one reference request per voice-clone reference."""
     text = data.get("input")
     chars = len(text) if isinstance(text, str) else 0
-    refs = data.get("ref_audio") or batch_ref
-    refs = refs if isinstance(refs, list) else [refs]
-    refs = [*refs, data.get("ref_audio_2")]
-    return chars + REF_SPEECH_CHARS * sum(1 for r in refs if isinstance(r, str) and r)
-
-
-def _speech_workload(data: Dict[str, Any]) -> float:
-    return _in_request_units(_speech_chars(data), REF_SPEECH_CHARS)
+    refs = _flatten([data.get("ref_audio"), data.get("ref_audio_2")])
+    chars += REF_SPEECH_CHARS * sum(1 for r in refs if isinstance(r, str) and r)
+    return _in_request_units(chars, REF_SPEECH_CHARS)
 
 
 def _speech_batch_workload(data: Dict[str, Any]) -> float:
-    """The batch's items, summed; clamped as one request, since it is one."""
+    """Each item as on speech; the batch's ref_audio applies to items without one."""
     items = data.get("items")
-    items = [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
-    chars = sum(_speech_chars(item, data.get("ref_audio")) for item in items)
+    chars = 0
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict):
+            text = item.get("input")
+            chars += len(text) if isinstance(text, str) else 0
+            if item.get("ref_audio") or data.get("ref_audio"):
+                chars += REF_SPEECH_CHARS
     return _in_request_units(chars, REF_SPEECH_CHARS)
 
 
 def _chat_batch_workload(data: Dict[str, Any]) -> float:
-    """max_tokens for each conversation in the batch, as on /v1/chat/completions."""
     messages = data.get("messages")
     count = len(messages) if isinstance(messages, list) else 0
-    tokens = data.get("max_tokens") or data.get("max_completion_tokens") or 0
-    return _bounded_int(tokens, 0, 10**9, 0) * count * _bounded_int(data.get("n") or 1, 1, 128, 1)
+    tokens = _number(data.get("max_tokens") or 0, 0) * count
+    return _in_request_units(tokens, BENCHMARK_MAX_TOKENS)
 
 
 def _audio_generate_workload(data: Dict[str, Any]) -> float:
-    """Seconds of audio asked for; the engine's own length when unset."""
-    try:
-        seconds = float(data.get("audio_length") or REF_AUDIO_GEN_SECONDS)
-    except (TypeError, ValueError, OverflowError):
-        seconds = REF_AUDIO_GEN_SECONDS
-    if not seconds == seconds:                          # NaN
-        seconds = REF_AUDIO_GEN_SECONDS
-    seconds = min(max(seconds, 0.0), MAX_AUDIO_GEN_SECONDS)
+    seconds = _number(data.get("audio_length") or REF_AUDIO_GEN_SECONDS, REF_AUDIO_GEN_SECONDS)
     return _in_request_units(seconds, REF_AUDIO_GEN_SECONDS)
 
 
 def _video_workload(data: Dict[str, Any]) -> float:
-    """Pixels x frames x outputs, in request units. Sizes the model picks for itself
-    (and `size`, `seconds`, `fps` left unset) count as the reference video."""
-    pixels = REF_VIDEO_PIXELS
+    """Pixels x frames x outputs; anything the model picks counts as the reference."""
+    width, height = data.get("width"), data.get("height")
     w, sep, h = str(data.get("size") or "").lower().partition("x")
-    if data.get("width") and data.get("height"):
-        w, h, sep = data["width"], data["height"], "x"
-    if sep:
-        pixels = (_bounded_int(w, 1, MAX_IMAGE_SIDE, REF_VIDEO_WIDTH)
-                  * _bounded_int(h, 1, MAX_IMAGE_SIDE, REF_VIDEO_HEIGHT))
+    if sep:                                 # the engine lets `size` win
+        width, height = w, h
+    pixels = (_number(width, REF_VIDEO_WIDTH) * _number(height, REF_VIDEO_HEIGHT)
+              if width and height else REF_VIDEO_WIDTH * REF_VIDEO_HEIGHT)
     frames = REF_VIDEO_FRAMES
     if data.get("num_frames"):
-        frames = _bounded_int(data["num_frames"], 1, MAX_VIDEO_FRAMES, REF_VIDEO_FRAMES)
+        frames = _number(data["num_frames"], REF_VIDEO_FRAMES)
     elif data.get("seconds"):
-        fps = _bounded_int(data.get("fps") or REF_VIDEO_FPS, 1, 240, REF_VIDEO_FPS)
-        frames = _bounded_int(data["seconds"], 1, MAX_VIDEO_FRAMES, 1) * fps
-    outputs = _bounded_int(data.get("num_outputs_per_prompt") or 1, 1, MAX_VIDEO_OUTPUTS, 1)
-    return _in_request_units(pixels * frames * outputs, REF_VIDEO_PIXELS * REF_VIDEO_FRAMES)
+        frames = (_number(data["seconds"], 1)
+                  * _number(data.get("fps") or REF_VIDEO_FPS, REF_VIDEO_FPS))
+    outputs = _number(data.get("num_outputs_per_prompt") or 1, 1)
+    return _in_request_units(pixels * frames * outputs,
+                             REF_VIDEO_WIDTH * REF_VIDEO_HEIGHT * REF_VIDEO_FRAMES)
 
 
 def _embeddings_workload(data: Dict[str, Any]) -> float:
-    """Size of the embedding input, in request units.
-
-    `input` is a string, an array of strings, an array of tokens, or an array of token
-    arrays. A batch costs about its sum, so items are summed; tokens are converted to
-    characters so every shape lands in one scale.
-    """
+    """`input`: a string, or a list of strings, tokens or token lists; items are summed."""
     value = data.get("input")
     items = value if isinstance(value, (list, tuple)) else [value]
     chars = 0
@@ -610,38 +494,24 @@ def _embeddings_workload(data: Dict[str, Any]) -> float:
         if isinstance(item, str):
             chars += len(item)
         elif isinstance(item, (list, tuple)):
-            chars += len(item) * CHARS_PER_TOKEN      # a token array
+            chars += len(item) * CHARS_PER_TOKEN
         elif isinstance(item, int):
-            chars += CHARS_PER_TOKEN                  # a bare token
+            chars += CHARS_PER_TOKEN
     return _in_request_units(chars, REF_EMBED_CHARS)
 
 
 UPLOAD_ROUTES = ("/v1/images/edits", "/v1/videos/sync",
                  "/v1/audio/transcriptions", "/v1/audio/translations")
-# Served when OPENAI_ROUTES is unset, as before this worker had other routes, plus
-# whichever route BENCHMARK_ROUTE names.
+# Served, with BENCHMARK_ROUTE, when OPENAI_ROUTES is unset: what the worker served before.
 DEFAULT_ROUTES = ("/v1/completions", "/v1/chat/completions")
 
 
 def benchmark_route() -> str:
-    """The route this deployment is benchmarked on: only the template knows which of the
-    routes an engine serves the endpoint exists for."""
-    route = os.environ.get("BENCHMARK_ROUTE", "").strip() or DEFAULT_BENCHMARK_ROUTE
-    if route not in BENCHMARKS:
-        raise RuntimeError(
-            f"BENCHMARK_ROUTE={route!r} cannot be benchmarked; expected one of "
-            + ", ".join(BENCHMARKS))
-    return route
+    return os.environ.get("BENCHMARK_ROUTE", "").strip() or DEFAULT_BENCHMARK_ROUTE
 
 
 def _served_routes(handlers: List[HandlerConfig]) -> List[HandlerConfig]:
-    """The handlers to serve.
-
-    OPENAI_ROUTES (comma-separated) chooses them; unset serves DEFAULT_ROUTES plus the
-    benchmarked route, so an existing deployment serves exactly what it did before. Every
-    instance pulls this worker from main at boot, so on an SDK that cannot send multipart
-    it degrades instead of failing: the upload routes are not served, and answer 404.
-    """
+    """OPENAI_ROUTES, less the upload routes on an SDK that cannot send multipart."""
     known = {h.route for h in handlers}
     wanted = {r.strip() for r in os.environ.get("OPENAI_ROUTES", "").split(",") if r.strip()}
     if wanted - known:
@@ -674,12 +544,9 @@ def _served_routes(handlers: List[HandlerConfig]) -> List[HandlerConfig]:
 
 def build_config(defaults: EngineDefaults, model_server_url: str = MODEL_SERVER_URL,
                  model_server_port: int = MODEL_SERVER_PORT) -> dict:
-    """The WorkerConfig kwargs for an engine. Separate from run() so the handler table
-    can be inspected without starting a server."""
-
+    """The WorkerConfig kwargs, apart from run() so the handler table can be tested."""
     # Relative path resolves against the server url+port; a full URL is used as-is.
     healthcheck_url = os.environ.get("MODEL_HEALTH_ENDPOINT", "/health")
-    # Exactly one route carries a BenchmarkConfig, which is what the SDK requires.
     benchmarked = benchmark_route()
 
     def route(path, **kw):
@@ -697,25 +564,21 @@ def build_config(defaults: EngineDefaults, model_server_url: str = MODEL_SERVER_
               request_parser=request_parser),
         route("/v1/chat/completions/batch", workload_calculator=_chat_batch_workload,
               request_parser=request_parser),
-        # `input` is a real field on speech and embeddings: they unwrap only a dict.
         route("/v1/audio/speech", workload_calculator=_speech_workload,
               request_parser=speech_request_parser),
         route("/v1/audio/speech/batch", workload_calculator=_speech_batch_workload,
               request_parser=speech_batch_request_parser),
-        # Text to music or sound: `input` is the prompt.
         route("/v1/audio/generate", workload_calculator=_audio_generate_workload,
               request_parser=_unwrap_input),
         route("/v1/embeddings", workload_calculator=_embeddings_workload,
               request_parser=_unwrap_input),
         route("/v1/images/generations", workload_calculator=_image_workload,
               request_parser=request_parser),
-        # Payload classes apply their own parsing; request_parser is ignored with them.
         route("/v1/images/edits", payload_class=ImageEditPayload),
         route("/v1/audio/transcriptions", payload_class=TranscriptionPayload),
         route("/v1/audio/translations", payload_class=TranscriptionPayload),
         route("/v1/videos/sync", payload_class=VideoPayload),
     ]
-    # Routes an engine does not implement answer 404 from behind the worker.
 
     config = dict(
         model_server_url=model_server_url,

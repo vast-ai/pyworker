@@ -25,10 +25,9 @@ the video file fields) and are sent to the engine as multipart form data. `filen
 multipart support; on an older SDK the upload routes are not served.
 
 `/v1/videos/sync` holds the request open until the video is done (the engine gives up after
-`VLLM_OMNI_VIDEO_SYNC_TIMEOUT`, 600 s by default). Its reference objects (`image_reference`,
-`video_reference`, `audio_reference`), `lora` and `extra_params` are sent as JSON strings,
-which is how the engine reads them from a form. The asynchronous `/v1/videos` job API is
-not served: it is polled with GETs, and the worker takes only POSTs.
+`VLLM_OMNI_VIDEO_SYNC_TIMEOUT`, 600 s by default). The noise masks are JSON files. The
+asynchronous `/v1/videos` job API is not served: it is polled with GETs, and the worker
+takes only POSTs.
 
 References (`url` on edits, `ref_audio` on speech and speech batches, and the URL in each
 video reference) are passed to the engine, not uploaded,
@@ -36,11 +35,9 @@ so they must be an http(s) URL or a `data:` URI; anything else, a file path incl
 refused. http(s) URLs are fetched by the engine from inside the instance and are not
 filtered here, as with `image_url` on chat.
 
-`lora` (on image and video routes) and `frame_interpolation_model_path` (on video) are
-different: they name files already on the instance, and are passed through as given. Put
-a LoRA there by baking it into a custom image (recommended), or by fetching it with the
-provisioning script on every instance that needs it; a speech voice can be delivered
-the same way.
+`lora` and `frame_interpolation_model_path` name files already on the instance and are
+passed through as given: bake a LoRA into a custom image (recommended), or fetch it with
+the provisioning script.
 
 vLLM-Omni reads an edit mask from `mask_image`, not the `mask` the OpenAI API names, so
 a `mask` is not applied there.
