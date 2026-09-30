@@ -215,13 +215,13 @@ async def demo_route(client: Serverless, args: argparse.Namespace) -> None:
                                    {**model, "query": RERANK_QUERY, "documents": RERANK_DOCS}, args.endpoint)
         print(RERANK_QUERY)
         for r in sorted(resp.get("results", []), key=lambda r: -r["relevance_score"]):
-            print(f"  {r['relevance_score']:.3f}  {RERANK_DOCS[r['index']]}")
+            print(f"  {r['relevance_score']:.3g}  {RERANK_DOCS[r['index']]}")
     elif args.score:
         resp, _ = await call_route(client, "/v1/score",
                                    {**model, "queries": RERANK_QUERY, "items": RERANK_DOCS}, args.endpoint)
         print(RERANK_QUERY)
         for d in resp.get("data", []):
-            print(f"  {d['score']:.3f}  {RERANK_DOCS[d['index']]}")
+            print(f"  {d['score']:.3g}  {RERANK_DOCS[d['index']]}")
     elif args.speech:
         resp, ctype = await call_route(client, "/v1/audio/speech",
                                        {**model, "input": SPEECH_TEXT, "response_format": "wav",
