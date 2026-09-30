@@ -248,7 +248,7 @@ async def demo_route(client: Serverless, args: argparse.Namespace) -> None:
             f = b64_file(args.image_file)
             payload.update(input_reference=f["data"], input_reference_filename=f["name"])
         resp, ctype = await call_route(client, "/v1/videos/sync", payload, args.endpoint)
-        save(out, "video", resp, ctype)
+        save(out, "video-i2v" if args.image_file else "video", resp, ctype)
     elif args.chat_batch:
         resp, _ = await call_route(client, "/v1/chat/completions/batch",
                                    {**model, "messages": [[{"role": "user", "content": t}] for t in BATCH_TEXTS],
