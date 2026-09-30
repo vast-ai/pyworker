@@ -27,6 +27,8 @@ from workers.openai.benchmark import (
     REF_AUDIO_SECONDS,
     REF_EMBED_CHARS,
     REF_IMAGE_SIDE,
+    REF_RERANK_CHARS,
+    RERANK_DOC_CHARS,
     resolve_model_name as _resolve_model_name,
     benchmark_speech,
     synthetic_png,
@@ -485,6 +487,45 @@ def _video_workload(data: Dict[str, Any]) -> float:
                              REF_VIDEO_WIDTH * REF_VIDEO_HEIGHT * REF_VIDEO_FRAMES)
 
 
+def _is_tokens(value: Any) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(t, int) for t in value)
+
+
+def _score_input_chars(value: Any) -> int:
+    """Text, token ids, or a multimodal object (counted as one document)."""
+    if isinstance(value, str):
+        return len(value)
+    if _is_tokens(value):
+        return len(value) * CHARS_PER_TOKEN
+    return RERANK_DOC_CHARS if value is not None else 0
+
+
+def _pairs_workload(left: Any, right: Any) -> float:
+    """A reranker reads each (query, document) pair: one side against many, or two lists
+    pairwise, as the engines score them."""
+    lefts = left if isinstance(left, list) and not _is_tokens(left) else [left]
+    rights = right if isinstance(right, list) and not _is_tokens(right) else [right]
+    if len(lefts) == 1:
+        pairs = [(lefts[0], r) for r in rights]
+    elif len(rights) == 1:
+        pairs = [(item, rights[0]) for item in lefts]
+    else:
+        pairs = list(zip(lefts, rights))
+    chars = sum(_score_input_chars(a) + _score_input_chars(b) for a, b in pairs)
+    return _in_request_units(chars, REF_RERANK_CHARS)
+
+
+def _rerank_workload(data: Dict[str, Any]) -> float:
+    return _pairs_workload(data.get("query"), data.get("documents"))
+
+
+def _score_workload(data: Dict[str, Any]) -> float:
+    """vLLM takes text_1/text_2, queries/items or data_1/data_2."""
+    def first(*keys):
+        return next((data[k] for k in keys if data.get(k) is not None), None)
+    return _pairs_workload(first("text_1", "queries", "data_1"), first("text_2", "items", "data_2"))
+
+
 def _embeddings_workload(data: Dict[str, Any]) -> float:
     """`input`: a string, or a list of strings, tokens or token lists; items are summed."""
     value = data.get("input")
@@ -572,6 +613,8 @@ def build_config(defaults: EngineDefaults, model_server_url: str = MODEL_SERVER_
               request_parser=_unwrap_input),
         route("/v1/embeddings", workload_calculator=_embeddings_workload,
               request_parser=_unwrap_input),
+        route("/v1/rerank", workload_calculator=_rerank_workload, request_parser=request_parser),
+        route("/v1/score", workload_calculator=_score_workload, request_parser=request_parser),
         route("/v1/images/generations", workload_calculator=_image_workload,
               request_parser=request_parser),
         route("/v1/images/edits", payload_class=ImageEditPayload),

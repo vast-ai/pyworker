@@ -24,6 +24,10 @@ REF_IMAGE_SIDE = 1024      # one reference image, per side
 REF_AUDIO_SECONDS = 30.0   # one reference clip: one Whisper window
 REF_AUDIO_GEN_SECONDS = 10.0
 BATCH_BENCHMARK_ITEMS = 4  # a batch benchmark splits one reference request this many ways
+# A rerank or score request is one query against these documents; each pair fits a
+# 512-token reranker.
+RERANK_DOCS, RERANK_QUERY_CHARS, RERANK_DOC_CHARS = 16, 60, 250
+REF_RERANK_CHARS = RERANK_DOCS * (RERANK_QUERY_CHARS + RERANK_DOC_CHARS)
 # Sized for a 256-token encoder: engines refuse an over-length input.
 REF_EMBED_CHARS = int(os.environ.get("BENCHMARK_EMBED_CHARS") or 600)   # empty = unset
 
@@ -129,6 +133,16 @@ def audio_generate_benchmark_generator() -> dict:
     return {**_model(), "input": _words(60), "audio_length": REF_AUDIO_GEN_SECONDS}
 
 
+def rerank_benchmark_generator() -> dict:
+    return {**_model(), "query": _words(RERANK_QUERY_CHARS),
+            "documents": [_words(RERANK_DOC_CHARS) for _ in range(RERANK_DOCS)]}
+
+
+def score_benchmark_generator() -> dict:
+    return {**_model(), "queries": _words(RERANK_QUERY_CHARS),
+            "items": [_words(RERANK_DOC_CHARS) for _ in range(RERANK_DOCS)]}
+
+
 def images_benchmark_generator() -> dict:
     return {**_model(), "prompt": _words(60), "size": f"{REF_IMAGE_SIDE}x{REF_IMAGE_SIDE}", "n": 1}
 
@@ -145,6 +159,8 @@ BENCHMARKS = {
     "/v1/completions": Benchmark(10, 3, completions_benchmark_generator),
     "/v1/chat/completions": Benchmark(10, 3, chat_benchmark_generator),
     "/v1/embeddings": Benchmark(10, 3, embeddings_benchmark_generator),
+    "/v1/rerank": Benchmark(10, 3, rerank_benchmark_generator),
+    "/v1/score": Benchmark(10, 3, score_benchmark_generator),
     "/v1/audio/speech": Benchmark(4, 2, speech_benchmark_generator),
     "/v1/audio/speech/batch": Benchmark(4, 2, speech_batch_benchmark_generator),
     "/v1/chat/completions/batch": Benchmark(10, 3, chat_batch_benchmark_generator),

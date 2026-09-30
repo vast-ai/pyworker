@@ -11,6 +11,8 @@ All worker logic lives in `core.py`. The per-engine backends `vllm`, `sglang` an
 | `/v1/completions`, `/v1/chat/completions` | JSON | JSON or SSE |
 | `/v1/chat/completions/batch` | JSON (`messages`: a list of conversations) | JSON |
 | `/v1/embeddings` | JSON | JSON |
+| `/v1/rerank` | JSON (`query`, `documents`) | JSON |
+| `/v1/score` | JSON (`text_1`/`text_2`, `queries`/`items` or `data_1`/`data_2`) | JSON |
 | `/v1/audio/speech` | JSON (voice-clone `ref_audio`: http(s) URL or `data:` URI) | audio bytes |
 | `/v1/audio/speech/batch` | JSON (`items`, each a speech request; `ref_audio` on the batch or an item) | JSON, audio base64'd per item |
 | `/v1/audio/generate` | JSON (`input` is the prompt; `audio_length` in seconds) | audio bytes |
@@ -51,9 +53,13 @@ What each engine actually serves depends on the engine and the loaded model:
 
 | Engine | Typically serves |
 |---|---|
-| vLLM, SGLang, llama.cpp | completions, chat; embeddings with an embedding model |
+| vLLM, SGLang, llama.cpp | completions, chat; embeddings with an embedding model; rerank with a reranker |
 | vLLM with Whisper or Voxtral | transcriptions, translations (and no completions at all) |
 | vLLM-Omni (`--omni`) | image generations and edits, speech and speech batches, audio generation (Stable Audio), video (`/v1/videos/sync`), chat batches, alongside text |
+
+SGLang's `/v1/score` is a different API (label-token probabilities, `query`/`items`/
+`label_token_ids`); the score benchmark sends vLLM's shape, so benchmark an SGLang
+reranker on `/v1/rerank`.
 
 ## Benchmarking
 
@@ -174,6 +180,8 @@ the current directory). `--model` is optional here: the worker fills in its own.
 
 ```bash
 python -m workers.openai.client --embeddings --endpoint <ENDPOINT_NAME>
+python -m workers.openai.client --rerank --endpoint <ENDPOINT_NAME>
+python -m workers.openai.client --score --endpoint <ENDPOINT_NAME>
 python -m workers.openai.client --speech --voice <VOICE> --endpoint <ENDPOINT_NAME>
 python -m workers.openai.client --speech-batch --endpoint <ENDPOINT_NAME>
 python -m workers.openai.client --transcribe clip.wav --endpoint <ENDPOINT_NAME>

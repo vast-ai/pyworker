@@ -51,7 +51,8 @@ DEFAULTS = EngineDefaults(name="stub", model_log_file="/tmp/stub.log",
 ALL_ROUTES = {"/v1/completions", "/v1/chat/completions", "/v1/chat/completions/batch",
               "/v1/audio/speech", "/v1/audio/speech/batch", "/v1/audio/generate",
               "/v1/embeddings", "/v1/images/generations", "/v1/images/edits",
-              "/v1/audio/transcriptions", "/v1/audio/translations", "/v1/videos/sync"}
+              "/v1/audio/transcriptions", "/v1/audio/translations", "/v1/videos/sync",
+              "/v1/rerank", "/v1/score"}
 
 
 def b64(data=WAV):
@@ -375,6 +376,23 @@ class TestWorkload(unittest.TestCase):
             with self.subTest(str(value)[:20]):
                 self.assertEqual(self.calc("/v1/embeddings")({"input": value}), ONE_REQUEST)
 
+    def test_rerank_and_score_count_each_query_document_pair(self):
+        q, d = "q" * benchmark.RERANK_QUERY_CHARS, "d" * benchmark.RERANK_DOC_CHARS
+        docs = [d] * benchmark.RERANK_DOCS
+        for route, data in [("/v1/rerank", {"query": q, "documents": docs}),
+                            ("/v1/score", {"text_1": q, "text_2": docs}),
+                            ("/v1/score", {"queries": [q] * len(docs), "items": docs}),
+                            ("/v1/score", {"data_1": docs, "data_2": q}),
+                            ("/v1/rerank", {"query": [1] * (len(q) // core.CHARS_PER_TOKEN),
+                                            "documents": docs}),
+                            ("/v1/rerank", {"query": q, "documents": [
+                                {"content": [{"type": "image_url", "image_url": {"url": "u"}}]}] * len(docs)})]:
+            with self.subTest((route, list(data))):
+                self.assertEqual(self.calc(route)(data), ONE_REQUEST)
+        tokens = [1] * (benchmark.RERANK_DOC_CHARS // core.CHARS_PER_TOKEN)
+        self.assertAlmostEqual(self.calc("/v1/rerank")({"query": q, "documents": [tokens] * len(docs)}),
+                               ONE_REQUEST, delta=5)
+
     def test_each_clone_reference_adds_one_request(self):
         calc, base = self.calc("/v1/audio/speech"), {"input": "x" * 500}
         self.assertEqual(calc(base), ONE_REQUEST)
@@ -417,6 +435,8 @@ class TestWorkload(unittest.TestCase):
                                        {"n": "9" * 5000}, {"n": -5, "size": "-10x-10"}),
             "/v1/audio/speech": ({"input": 123}, {"ref_audio": [None, 7, ""]}),
             "/v1/embeddings": ({}, {"input": None}),
+            "/v1/rerank": ({}, {"query": 5, "documents": "x"}, {"documents": [None, {}, [[1]]]}),
+            "/v1/score": ({}, {"text_1": [], "text_2": []}, {"queries": ["a"] * 3, "items": ["b"] * 2}),
             "/v1/chat/completions/batch": ({}, {"messages": "x", "max_tokens": 5},
                                            {"messages": [[]], "max_tokens": "a"}),
             "/v1/audio/speech/batch": ({"items": "x"}, {"items": [5, {"input": 3}]}),
@@ -441,6 +461,7 @@ class TestWorkload(unittest.TestCase):
         worst = {
             "/v1/audio/speech": {"input": "x" * 100_000, "ref_audio": ["A" * 10_000] * 10},
             "/v1/embeddings": {"input": ["x" * 10_000] * 1_000},
+            "/v1/rerank": {"query": "x" * 10_000, "documents": ["x" * 10_000] * 1_000},
             "/v1/images/generations": {"n": 100_000, "size": "8192x8192"},
             "/v1/audio/speech/batch": {"items": [{"input": "x" * 100_000}] * 1_000},
             "/v1/chat/completions/batch": {"messages": [CONVO] * 256, "max_tokens": 2048},
@@ -470,6 +491,8 @@ class TestBenchmarks(unittest.TestCase):
                  "/v1/chat/completions": lambda b: b["max_tokens"],
                  "/v1/chat/completions/batch": core._chat_batch_workload,
                  "/v1/embeddings": core._embeddings_workload,
+                 "/v1/rerank": core._rerank_workload,
+                 "/v1/score": core._score_workload,
                  "/v1/audio/speech": core._speech_workload,
                  "/v1/audio/speech/batch": core._speech_batch_workload,
                  "/v1/audio/generate": core._audio_generate_workload,

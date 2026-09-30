@@ -170,6 +170,11 @@ EDIT_PROMPT = "Make it a snowy winter scene"
 AUDIO_PROMPT = "Rain on a tin roof with distant thunder"
 VIDEO_PROMPT = "A red kite flying over a beach, slow camera pan"
 BATCH_TEXTS = ["Name a primary colour.", "Name a planet.", "Name an ocean."]
+RERANK_QUERY = "How do I reset my password?"
+RERANK_DOCS = ["To recover your account, use the 'Forgot login' link and follow the email.",
+               "Our office is closed on public holidays.",
+               "Passwords must be at least 12 characters long.",
+               "The best pizza in Naples is a matter of fierce debate."]
 EXTENSIONS = {"audio/wav": "wav", "audio/x-wav": "wav", "audio/mpeg": "mp3", "audio/flac": "flac",
               "audio/ogg": "ogg", "audio/opus": "opus", "video/mp4": "mp4", "image/png": "png"}
 
@@ -205,6 +210,18 @@ async def demo_route(client: Serverless, args: argparse.Namespace) -> None:
         resp, _ = await call_route(client, "/v1/embeddings", {**model, "input": [SPEECH_TEXT]}, args.endpoint)
         vectors = resp.get("data", [])
         print(f"{len(vectors)} vector(s) of {len(vectors[0]['embedding']) if vectors else 0} dimensions")
+    elif args.rerank:
+        resp, _ = await call_route(client, "/v1/rerank",
+                                   {**model, "query": RERANK_QUERY, "documents": RERANK_DOCS}, args.endpoint)
+        print(RERANK_QUERY)
+        for r in sorted(resp.get("results", []), key=lambda r: -r["relevance_score"]):
+            print(f"  {r['relevance_score']:.3f}  {RERANK_DOCS[r['index']]}")
+    elif args.score:
+        resp, _ = await call_route(client, "/v1/score",
+                                   {**model, "queries": RERANK_QUERY, "items": RERANK_DOCS}, args.endpoint)
+        print(RERANK_QUERY)
+        for d in resp.get("data", []):
+            print(f"  {d['score']:.3f}  {RERANK_DOCS[d['index']]}")
     elif args.speech:
         resp, ctype = await call_route(client, "/v1/audio/speech",
                                        {**model, "input": SPEECH_TEXT, "response_format": "wav",
@@ -590,6 +607,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     modes.add_argument("--interactive", action="store_true", help="Start interactive streaming chat session")
     modes.add_argument("--chat-batch", action="store_true", help="Test /v1/chat/completions/batch")
     modes.add_argument("--embeddings", action="store_true", help="Test /v1/embeddings")
+    modes.add_argument("--rerank", action="store_true", help="Test /v1/rerank")
+    modes.add_argument("--score", action="store_true", help="Test /v1/score")
     modes.add_argument("--speech", action="store_true", help="Test /v1/audio/speech")
     modes.add_argument("--speech-batch", action="store_true", help="Test /v1/audio/speech/batch")
     modes.add_argument("--transcribe", metavar="FILE", help="Test /v1/audio/transcriptions with FILE")
@@ -601,7 +620,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
-ROUTE_MODES = ("chat_batch", "embeddings", "speech", "speech_batch", "transcribe", "translate",
+ROUTE_MODES = ("chat_batch", "embeddings", "rerank", "score", "speech", "speech_batch", "transcribe", "translate",
                "image", "edit", "audio_generate", "video")
 
 
