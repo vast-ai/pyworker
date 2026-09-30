@@ -11,4 +11,4 @@ The speech clip the transcription and translation benchmarks send, tiled to 30 s
 
 Checked on faster-whisper large-v2: transcribed word for word, and it costs about 1.3x
 a real recording of the same length (it is denser speech), where synthetic noise costs
-a small fraction. Not re-measured on vLLM Whisper.
+a small fraction. vLLM whisper-large-v3 also transcribes it word for word.

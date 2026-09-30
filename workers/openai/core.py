@@ -23,7 +23,6 @@ from vastai.serverless.server.lib.data_types import ApiPayload, JsonDataExceptio
 from workers.openai.benchmark import (
     BENCHMARKS,
     DEFAULT_BENCHMARK_ROUTE,
-    REF_AUDIO_GEN_SECONDS,
     REF_AUDIO_SECONDS,
     REF_EMBED_CHARS,
     REF_IMAGE_SIDE,
@@ -143,7 +142,7 @@ def _file_part(raw: bytes, filename: Any, default: str, types: Dict[str, str],
     name = os.path.basename(str(filename or "")).strip()
     name = re.sub(r"[^A-Za-z0-9._-]", "_", name).lstrip(".") or default
     stem, dot, ext = name.rpartition(".")
-    name = (stem[:128] + dot + ext) if dot else name[:128]     # keep the extension
+    name = stem[:128] + dot + ext                              # keep the extension
     ext = ext.lower() if dot else ""
     if ext not in types:
         raise JsonDataException(
@@ -381,15 +380,22 @@ def _unwrap_input(request: Any) -> Any:
         request.get("input"), dict) else request
 
 
+def _speech_references(data: Dict[str, Any]) -> List[Any]:
+    """ref_audio, ref_audio_2, and the engine's `references` alias ([{"audio_path": ...}])."""
+    refs = data.get("references")
+    paths = [r.get("audio_path") if isinstance(r, dict) else r
+             for r in (refs if isinstance(refs, list) else [refs] if refs is not None else [])]
+    return [*_flatten([data.get("ref_audio")]), data.get("ref_audio_2"), *paths]
+
+
 def speech_request_parser(request: Any) -> Dict[str, Any]:
     request = _unwrap_input(request)
     if not isinstance(request, dict):
         raise JsonDataException({"payload": "must be an object"})
     _drop_empty(request, ("ref_audio", "ref_audio_2"))
-    refs = [request.get("ref_audio"), request.get("ref_audio_2")]
-    _check_budget(_flatten(refs), "ref_audio")
-    for key in ("ref_audio", "ref_audio_2"):
-        _check_reference(request.get(key), key)
+    refs = _speech_references(request)
+    _check_budget(refs, "ref_audio")
+    _check_reference([r for r in refs if r is not None], "ref_audio")
     return request
 
 
@@ -424,8 +430,7 @@ def _speech_workload(data: Dict[str, Any]) -> float:
     """Text, plus one reference request per voice-clone reference."""
     text = data.get("input")
     chars = len(text) if isinstance(text, str) else 0
-    refs = _flatten([data.get("ref_audio"), data.get("ref_audio_2")])
-    chars += REF_SPEECH_CHARS * sum(1 for r in refs if isinstance(r, str))
+    chars += REF_SPEECH_CHARS * sum(1 for r in _speech_references(data) if isinstance(r, str))
     return _in_request_units(chars, REF_SPEECH_CHARS)
 
 
@@ -445,13 +450,14 @@ def _speech_batch_workload(data: Dict[str, Any]) -> float:
 def _chat_batch_workload(data: Dict[str, Any]) -> float:
     messages = data.get("messages")
     count = len(messages) if isinstance(messages, list) else 0
-    tokens = _number(data.get("max_tokens"), 0) * count
+    per = data.get("max_tokens") or data.get("max_completion_tokens") or BENCHMARK_MAX_TOKENS
+    tokens = _number(per, BENCHMARK_MAX_TOKENS) * count
     return _in_request_units(tokens, BENCHMARK_MAX_TOKENS)
 
 
 def _audio_generate_workload(data: Dict[str, Any]) -> float:
-    seconds = _number(data.get("audio_length"), REF_AUDIO_GEN_SECONDS)
-    return _in_request_units(seconds, REF_AUDIO_GEN_SECONDS)
+    """One request each: Stable Audio renders its full length, however much is asked for."""
+    return float(BENCHMARK_MAX_TOKENS)
 
 
 def _video_workload(data: Dict[str, Any]) -> float:
@@ -558,8 +564,7 @@ def _served_routes(handlers: List[HandlerConfig]) -> List[HandlerConfig]:
     return served
 
 
-def build_config(defaults: EngineDefaults, model_server_url: str = MODEL_SERVER_URL,
-                 model_server_port: int = MODEL_SERVER_PORT) -> dict:
+def build_config(defaults: EngineDefaults) -> dict:
     """The WorkerConfig kwargs, apart from run() so the handler table can be tested."""
     # Relative path resolves against the server url+port; a full URL is used as-is.
     healthcheck_url = os.environ.get("MODEL_HEALTH_ENDPOINT", "/health")
@@ -602,8 +607,8 @@ def build_config(defaults: EngineDefaults, model_server_url: str = MODEL_SERVER_
     ]
 
     config = dict(
-        model_server_url=model_server_url,
-        model_server_port=model_server_port,
+        model_server_url=MODEL_SERVER_URL,
+        model_server_port=MODEL_SERVER_PORT,
         model_log_file=os.environ.get("MODEL_LOG", defaults.model_log_file),
         model_healthcheck_url=healthcheck_url,
         handlers=_served_routes(handlers),

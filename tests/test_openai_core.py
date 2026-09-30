@@ -224,6 +224,12 @@ class TestVideo(unittest.TestCase):
         self.assertEqual(p.files["source_audio"][2], "audio/wav")
         self.assertEqual(p.files["video_noise_mask"][0::2], ("mask.json", "application/json"))
         self.assertEqual(p.files["audio_noise_mask"][0], "m.json")
+        p = VideoPayload.from_json_msg({"prompt": "p", "input_references": [self.PNG],
+                                        "input_references_filename": ["clip.mp4"]})
+        self.assertEqual(p.files["input_references"][0][2], "video/mp4")
+        with self.assertRaises(JsonDataException):
+            VideoPayload.from_json_msg({"prompt": "p", "control_reference": self.PNG,
+                                        "control_reference_filename": "x.wav"})
 
     def test_a_list_of_references_is_sent_as_one_json_field(self):
         refs = [{"image_url": "https://x/a.png"}, {"file_id": "file-1"}]
@@ -254,6 +260,7 @@ class TestReferences(unittest.TestCase):
             "edit url[]": lambda v: ImageEditPayload.from_json_msg({"url[]": [v], "prompt": "p"}),
             "speech ref_audio": lambda v: speech({"input": "hi", "ref_audio": v}),
             "speech ref_audio_2": lambda v: speech({"input": "hi", "ref_audio_2": v}),
+            "speech references": lambda v: speech({"input": "hi", "references": [{"audio_path": v}]}),
             "batch ref_audio": lambda v: batch({"items": [{"input": "a"}], "ref_audio": v}),
             "batch item ref_audio": lambda v: batch({"items": [{"input": "a", "ref_audio": v}]}),
             "video reference": lambda v: VideoPayload.from_json_msg(
@@ -282,6 +289,10 @@ class TestReferences(unittest.TestCase):
         self.assertNotIn("ref_audio", batch({"items": [{"input": "a"}], "ref_audio": ""}))
         self.assertNotIn("url", ImageEditPayload.from_json_msg(
             {"image": b64(), "url": "", "prompt": "p"}).fields)
+
+    def test_ref_audio_2_is_one_string(self):
+        with self.assertRaises(JsonDataException):
+            handlers()["/v1/audio/speech"].request_parser({"input": "hi", "ref_audio_2": ["https://x/a.wav"]})
 
     def test_a_speech_batch_takes_one_reference_string_per_item(self):
         batch = handlers()["/v1/audio/speech/batch"].request_parser
@@ -407,6 +418,7 @@ class TestWorkload(unittest.TestCase):
         self.assertEqual(calc({**base, "ref_audio": "A" * 100_000}), 2 * ONE_REQUEST)
         self.assertEqual(calc({**base, "ref_audio": ["u1", "u2"]}), 3 * ONE_REQUEST)
         self.assertEqual(calc({**base, "ref_audio": "u1", "ref_audio_2": "u2"}), 3 * ONE_REQUEST)
+        self.assertEqual(calc({**base, "references": [{"audio_path": "u1"}]}), 2 * ONE_REQUEST)
 
     def test_a_speech_batch_counts_the_batch_reference_for_each_item(self):
         calc, item = self.calc("/v1/audio/speech/batch"), {"input": "x" * 500}
@@ -416,11 +428,13 @@ class TestWorkload(unittest.TestCase):
     def test_a_chat_batch_counts_each_conversation(self):
         calc = self.calc("/v1/chat/completions/batch")
         self.assertEqual(calc({"messages": [CONVO] * 4, "max_tokens": 100}), 400)
+        self.assertEqual(calc({"messages": [CONVO] * 4, "max_completion_tokens": 100}), 400)
+        self.assertEqual(calc({"messages": [CONVO] * 2}), 2 * ONE_REQUEST)
 
-    def test_audio_generation_counts_seconds(self):
+    def test_audio_generation_is_one_request_whatever_the_length(self):
         calc = self.calc("/v1/audio/generate")
-        self.assertEqual(calc({"audio_length": 2 * benchmark.REF_AUDIO_GEN_SECONDS}), 2 * ONE_REQUEST)
-        self.assertEqual(calc({}), ONE_REQUEST)
+        self.assertEqual(calc({"audio_length": 1}), ONE_REQUEST)
+        self.assertEqual(calc({"audio_length": 47}), ONE_REQUEST)
 
     def test_video_counts_pixels_frames_and_outputs(self):
         w = lambda **f: core._video_workload(f)   # noqa: E731
@@ -459,7 +473,7 @@ class TestWorkload(unittest.TestCase):
                     self.assertGreaterEqual(self.calc(route)(data), FLOOR)
         for data in ({"width": "x", "height": 5}, {"num_frames": -1}, {"seconds": "a"},
                      {"size": "9" * 400 + "x1"}, {"num_outputs_per_prompt": "9" * 5000},
-                     {"width": float("inf"), "height": 0}):
+                     {"width": float("inf"), "height": 0}, {"num_frames": float("nan")}):
             with self.subTest(str(data)[:30]):
                 self.assertGreaterEqual(core._video_workload(data), FLOOR)
 
@@ -522,15 +536,18 @@ class TestBenchmarks(unittest.TestCase):
         worst_case_tokens = len(benchmark.embeddings_benchmark_generator()["input"]) / 3.1
         self.assertLess(worst_case_tokens, 256 * 0.8)
 
-    def test_an_empty_embed_chars_setting_is_the_default(self):
-        """Imported by every OpenAI worker: an empty value must not crash the boot."""
-        env = dict(os.environ, BENCHMARK_EMBED_CHARS="", PYTHONPATH=os.pathsep.join(sys.path))
-        out = subprocess.run(
-            [sys.executable, "-c",
-             "from workers.openai.benchmark import REF_EMBED_CHARS; print(REF_EMBED_CHARS)"],
-            env=env, capture_output=True, text=True)
-        self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertEqual(out.stdout.split()[-1], "600")
+    def test_a_bad_embed_chars_setting_falls_back_to_the_default(self):
+        """Imported by every OpenAI worker: a bad value must not stop the boot."""
+        for value in ("", "abc"):
+            with self.subTest(value):
+                env = dict(os.environ, BENCHMARK_EMBED_CHARS=value, PYTHONPATH=os.pathsep.join(sys.path))
+                out = subprocess.run(
+                    [sys.executable, "-c",
+                     "from workers.openai.benchmark import REF_EMBED_CHARS; print(REF_EMBED_CHARS)"],
+                    env=env, capture_output=True, text=True)
+                self.assertEqual(out.returncode, 0, out.stderr)
+                self.assertEqual(out.stdout.split()[-1], "600")
+                self.assertEqual("WARNING" in out.stdout, bool(value))
 
     def test_the_transcription_benchmark_sends_the_speech_sample_tiled(self):
         """Noise leaves the decoder idle and overstates throughput."""

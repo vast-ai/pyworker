@@ -19,7 +19,7 @@ All worker logic lives in `core.py`. The per-engine backends `vllm`, `sglang` an
 | `/v1/audio/transcriptions`, `/v1/audio/translations` | JSON with the file base64'd in `file` | JSON or text |
 | `/v1/images/generations` | JSON | JSON |
 | `/v1/images/edits` | JSON with `image` (base64, or a list), or `url` (http(s) or `data:`) | JSON |
-| `/v1/videos/sync` | JSON: form fields, plus uploads base64'd (`input_reference`, `input_references`, `source_video`, ...) | `video/mp4` bytes |
+| `/v1/videos/sync` | JSON: form fields, plus uploads base64'd (`input_reference`, `input_references`, `source_video`, ...); reference objects as JSON objects, not strings | `video/mp4` bytes |
 
 The worker envelope is JSON, so uploads arrive base64-encoded (`file`, `image`, `mask`, and
 the video file fields) and are sent to the engine as multipart form data. `filename` /
@@ -31,10 +31,10 @@ multipart support; on an older SDK the upload routes are not served.
 asynchronous `/v1/videos` job API is not served: it is polled with GETs, and the worker
 takes only POSTs.
 
-References (`url` on edits, `ref_audio` on speech and speech batches, and the URL in each
-video reference) are passed to the engine, not uploaded,
-so they must be an http(s) URL or a `data:` URI; anything else, a file path included, is
-refused. http(s) URLs are fetched by the engine from inside the instance and are not
+References (`url` on edits; `ref_audio`, `ref_audio_2` and `references[].audio_path` on
+speech; `ref_audio` on speech batches; the URL in each video reference) are passed to the
+engine, not uploaded, so they must be an http(s) URL or a `data:` URI; anything else, a
+file path included, is refused. http(s) URLs are fetched by the engine from inside the instance and are not
 filtered here, as with `image_url` on chat.
 
 `lora` and `frame_interpolation_model_path` name files already on the instance and are
@@ -53,9 +53,12 @@ What each engine actually serves depends on the engine and the loaded model:
 
 | Engine | Typically serves |
 |---|---|
-| vLLM, SGLang, llama.cpp | completions, chat; embeddings with an embedding model; rerank with a reranker |
-| vLLM with Whisper or Voxtral | transcriptions, translations (and no completions at all) |
+| vLLM, SGLang, llama.cpp | completions, chat; embeddings with an embedding model; rerank with a reranker; transcriptions with a speech model |
+| vLLM | also chat batches, score, and translations with Whisper |
 | vLLM-Omni (`--omni`) | image generations and edits, speech and speech batches, audio generation (Stable Audio), video (`/v1/videos/sync`), chat batches, alongside text |
+
+A batch benchmark only sees the HTTP status, and vLLM-Omni answers a speech batch with 200
+even when items fail, so benchmark a speech model on `/v1/audio/speech`.
 
 SGLang's `/v1/score` is a different API (label-token probabilities, `query`/`items`/
 `label_token_ids`); the score benchmark sends vLLM's shape, so benchmark an SGLang

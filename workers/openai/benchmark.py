@@ -29,7 +29,12 @@ BATCH_BENCHMARK_ITEMS = 4  # a batch benchmark splits one reference request this
 RERANK_DOCS, RERANK_QUERY_CHARS, RERANK_DOC_CHARS = 16, 60, 250
 REF_RERANK_CHARS = RERANK_DOCS * (RERANK_QUERY_CHARS + RERANK_DOC_CHARS)
 # Sized for a 256-token encoder: engines refuse an over-length input.
-REF_EMBED_CHARS = int(os.environ.get("BENCHMARK_EMBED_CHARS") or 600)   # empty = unset
+try:
+    REF_EMBED_CHARS = int(os.environ.get("BENCHMARK_EMBED_CHARS") or 600)   # empty = unset
+except ValueError:
+    print(f"WARNING: BENCHMARK_EMBED_CHARS={os.environ['BENCHMARK_EMBED_CHARS']!r} is not an "
+          "integer; using 600", flush=True)
+    REF_EMBED_CHARS = 600
 
 
 def resolve_model_name() -> Optional[str]:
