@@ -166,3 +166,21 @@ Call to `/v1/completions` with json response
 python -m workers.openai.client --completion --endpoint <ENDPOINT_NAME> --model <MODEL_NAME>
 ```
 
+
+### The other routes
+
+One call to the route, printing the result or saving returned media to `--out` (default:
+the current directory). `--model` is optional here: the worker fills in its own.
+
+```bash
+python -m workers.openai.client --embeddings --endpoint <ENDPOINT_NAME>
+python -m workers.openai.client --speech --voice <VOICE> --endpoint <ENDPOINT_NAME>
+python -m workers.openai.client --speech-batch --endpoint <ENDPOINT_NAME>
+python -m workers.openai.client --transcribe clip.wav --endpoint <ENDPOINT_NAME>
+python -m workers.openai.client --translate clip.wav --endpoint <ENDPOINT_NAME>
+python -m workers.openai.client --image --endpoint <ENDPOINT_NAME>
+python -m workers.openai.client --edit photo.png --endpoint <ENDPOINT_NAME>
+python -m workers.openai.client --audio-generate --seconds 5 --endpoint <ENDPOINT_NAME>
+python -m workers.openai.client --video [--image-file first-frame.png] --endpoint <ENDPOINT_NAME>
+python -m workers.openai.client --chat-batch --endpoint <ENDPOINT_NAME>
+```
