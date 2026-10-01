@@ -1,4 +1,5 @@
 import logging
+import base64
 import json
 import os
 import sys
@@ -160,6 +161,119 @@ async def stream_chat_completions(client: Serverless, *, model: str, messages: L
     log.debug("STREAM /v1/chat/completions %s", json.dumps(payload)[:500])
     resp = await endpoint.request("/v1/chat/completions", payload, cost=payload["max_tokens"], stream=True)
     return resp["response"]  # async generator
+
+
+# ---- The other routes: one call each, saving any media they return ----
+SPEECH_TEXT = "A quick update on the project: the first round of testing went well."
+IMAGE_PROMPT = "A lighthouse on a rocky coast at dusk, oil painting"
+EDIT_PROMPT = "Make it a snowy winter scene"
+AUDIO_PROMPT = "Rain on a tin roof with distant thunder"
+VIDEO_PROMPT = "A red kite flying over a beach, slow camera pan"
+BATCH_TEXTS = ["Name a primary colour.", "Name a planet.", "Name an ocean."]
+RERANK_QUERY = "How do I reset my password?"
+RERANK_DOCS = ["To recover your account, use the 'Forgot login' link and follow the email.",
+               "Our office is closed on public holidays.",
+               "Passwords must be at least 12 characters long.",
+               "The best pizza in Naples is a matter of fierce debate."]
+EXTENSIONS = {"audio/wav": "wav", "video/mp4": "mp4", "image/png": "png"}
+
+
+async def call_route(client: Serverless, route: str, payload: Dict[str, Any], endpoint_name: str):
+    """(response, content_type): the response is JSON, text, or bytes for media."""
+    endpoint = await client.get_endpoint(name=endpoint_name)
+    log.debug("POST %s %s", route, json.dumps(payload)[:500])
+    resp = await endpoint.request(route, payload)
+    if not resp.get("ok"):
+        sys.exit(f"{route}: HTTP {resp.get('status')}: {(resp.get('text') or '')[:500]}")
+    return resp["response"], resp.get("content_type")
+
+
+def b64_file(path: str):
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode(), os.path.basename(path)
+
+
+def save(out_dir: str, stem: str, data: bytes, content_type: Optional[str]) -> None:
+    ext = EXTENSIONS.get((content_type or "").split(";")[0], "bin")
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"{stem}.{ext}")
+    with open(path, "wb") as f:
+        f.write(data)
+    print(f"Saved {path} ({len(data)} bytes, {content_type})")
+
+
+async def demo_route(client: Serverless, args: argparse.Namespace) -> None:
+    model = {"model": args.model} if args.model else {}
+    out = args.out
+
+    if args.embeddings:
+        resp, _ = await call_route(client, "/v1/embeddings", {**model, "input": [SPEECH_TEXT]}, args.endpoint)
+        vectors = resp.get("data", [])
+        print(f"{len(vectors)} vector(s) of {len(vectors[0]['embedding']) if vectors else 0} dimensions")
+    elif args.rerank:
+        resp, _ = await call_route(client, "/v1/rerank",
+                                   {**model, "query": RERANK_QUERY, "documents": RERANK_DOCS}, args.endpoint)
+        print(RERANK_QUERY)
+        results = resp if isinstance(resp, list) else resp.get("results", [])   # SGLang: a list
+        for score, i in sorted(((r.get("relevance_score", r.get("score", 0)), r["index"])
+                                for r in results), reverse=True):
+            print(f"  {score:.3g}  {RERANK_DOCS[i]}")
+    elif args.score:
+        resp, _ = await call_route(client, "/v1/score",
+                                   {**model, "queries": RERANK_QUERY, "items": RERANK_DOCS}, args.endpoint)
+        print(RERANK_QUERY)
+        for d in resp.get("data", []):
+            print(f"  {d['score']:.3g}  {RERANK_DOCS[d['index']]}")
+    elif args.speech:
+        resp, ctype = await call_route(client, "/v1/audio/speech",
+                                       {**model, "input": SPEECH_TEXT, "response_format": "wav",
+                                        "voice": args.voice},
+                                       args.endpoint)
+        save(out, "speech", resp, ctype)
+    elif args.speech_batch:
+        resp, _ = await call_route(client, "/v1/audio/speech/batch",
+                                   {**model, "items": [{"input": t} for t in BATCH_TEXTS],
+                                    "response_format": "wav", "voice": args.voice}, args.endpoint)
+        for r in resp.get("results", []):
+            if r.get("status") == "success":
+                save(out, f"speech-{r['index']}", base64.b64decode(r["audio_data"]), r.get("media_type"))
+            else:
+                print(f"item {r.get('index')}: {r.get('error')}")
+    elif args.transcribe or args.translate:
+        route = "/v1/audio/transcriptions" if args.transcribe else "/v1/audio/translations"
+        data, name = b64_file(args.transcribe or args.translate)
+        resp, _ = await call_route(client, route, {**model, "file": data, "filename": name},
+                                   args.endpoint)
+        print(resp.get("text") if isinstance(resp, dict) else resp)
+    elif args.image:
+        resp, _ = await call_route(client, "/v1/images/generations",
+                                   {**model, "prompt": IMAGE_PROMPT, "size": "1024x1024", "n": 1},
+                                   args.endpoint)
+        save(out, "image", base64.b64decode(resp["data"][0]["b64_json"]), "image/png")
+    elif args.edit:
+        data, name = b64_file(args.edit)
+        resp, _ = await call_route(client, "/v1/images/edits",
+                                   {**model, "image": data, "filename": name, "prompt": EDIT_PROMPT},
+                                   args.endpoint)
+        save(out, "edit", base64.b64decode(resp["data"][0]["b64_json"]), "image/png")
+    elif args.audio_generate:
+        resp, ctype = await call_route(client, "/v1/audio/generate",
+                                       {**model, "input": AUDIO_PROMPT, "audio_length": args.seconds},
+                                       args.endpoint)
+        save(out, "audio", resp, ctype)
+    elif args.video:
+        payload = {**model, "prompt": VIDEO_PROMPT, "width": 832, "height": 480, "num_frames": 33}
+        if args.image_file:
+            data, name = b64_file(args.image_file)
+            payload.update(input_reference=data, input_reference_filename=name)
+        resp, ctype = await call_route(client, "/v1/videos/sync", payload, args.endpoint)
+        save(out, "video-i2v" if args.image_file else "video", resp, ctype)
+    elif args.chat_batch:
+        resp, _ = await call_route(client, "/v1/chat/completions/batch",
+                                   {**model, "messages": [[{"role": "user", "content": t}] for t in BATCH_TEXTS],
+                                    "max_tokens": 64}, args.endpoint)
+        for text, choice in zip(BATCH_TEXTS, resp.get("choices", [])):
+            print(f"{text} -> {choice['message']['content']}")
 
 
 # ---------------------- Demo Runner ----------------------
@@ -477,10 +591,30 @@ class APIDemo:
 
 
 # ---------------------- CLI ----------------------
+ROUTE_FLAGS = {
+    "--chat-batch": "Test /v1/chat/completions/batch",
+    "--embeddings": "Test /v1/embeddings",
+    "--rerank": "Test /v1/rerank",
+    "--score": "Test /v1/score",
+    "--speech": "Test /v1/audio/speech",
+    "--speech-batch": "Test /v1/audio/speech/batch",
+    "--transcribe FILE": "Test /v1/audio/transcriptions with FILE",
+    "--translate FILE": "Test /v1/audio/translations with FILE",
+    "--image": "Test /v1/images/generations",
+    "--edit FILE": "Test /v1/images/edits on FILE",
+    "--audio-generate": "Test /v1/audio/generate",
+    "--video": "Test /v1/videos/sync",
+}
+
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Vast vLLM Demo (Serverless SDK)")
-    p.add_argument("--model", default=DEFAULT_MODEL, help=f"Model to use for requests (default: {DEFAULT_MODEL})")
+    p.add_argument("--model", help=f"Model to use for requests (default: {DEFAULT_MODEL} for "
+                   "completions and chat; the worker's own model for the other routes)")
     p.add_argument("--endpoint", default=ENDPOINT_NAME, help=f"Vast endpoint name (default: {ENDPOINT_NAME})")
+    p.add_argument("--out", default=".", help="Directory for returned audio, images and video")
+    p.add_argument("--voice", default="default", help="Voice for --speech and --speech-batch (default: default)")
+    p.add_argument("--seconds", type=float, default=10.0, help="Length for --audio-generate")
+    p.add_argument("--image-file", help="Reference image for --video (image to video)")
 
     modes = p.add_mutually_exclusive_group(required=False)
     modes.add_argument("--completion", action="store_true", help="Test completions endpoint")
@@ -488,15 +622,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     modes.add_argument("--chat-stream", action="store_true", help="Test chat completions endpoint with streaming")
     modes.add_argument("--tools", action="store_true", help="Test function calling with ls tool (non-streaming+streamed phases)")
     modes.add_argument("--interactive", action="store_true", help="Start interactive streaming chat session")
+    for flag, text in ROUTE_FLAGS.items():
+        name, _, metavar = flag.partition(" ")
+        if metavar:
+            modes.add_argument(name, metavar=metavar, help=text)
+        else:
+            modes.add_argument(name, action="store_true", help=text)
     return p
+
+
+ROUTE_MODES = [f.split()[0][2:].replace("-", "_") for f in ROUTE_FLAGS]
 
 
 async def main_async():
     args = build_arg_parser().parse_args()
 
-    selected = sum([args.completion, args.chat, args.chat_stream, args.tools, args.interactive])
+    route_mode = any(getattr(args, m) for m in ROUTE_MODES)
+    selected = sum([args.completion, args.chat, args.chat_stream, args.tools, args.interactive, route_mode])
     if selected == 0:
-        print("Please specify exactly one test mode:")
+        print("Please specify exactly one test mode (--help lists them all):")
         print("  --completion    : Test completions endpoint")
         print("  --chat          : Test chat completions endpoint (non-streaming)")
         print("  --chat-stream   : Test chat completions endpoint with streaming")
@@ -508,8 +652,10 @@ async def main_async():
         print("Please specify exactly one test mode")
         sys.exit(1)
 
+    if not route_mode:
+        args.model = args.model or DEFAULT_MODEL
     print("=" * 60)
-    print(f"Using model: {args.model}")
+    print(f"Using model: {args.model or '(the worker default)'}")
     print(f"Using endpoint: {args.endpoint}")
 
 
@@ -517,7 +663,9 @@ async def main_async():
         async with Serverless() as client:
             demo = APIDemo(client, args.model, args.endpoint, ToolManager())
 
-            if args.completion:
+            if route_mode:
+                await demo_route(client, args)
+            elif args.completion:
                 await demo.demo_completions()
             elif args.chat:
                 await demo.demo_chat(use_streaming=False)
