@@ -68,7 +68,7 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024        # per file: the OpenAI limit
 MAX_REQUEST_UPLOAD_BYTES = 64 * 1024 * 1024
 MAX_UPLOAD_FILES = 16
 
-# Engines pick a decoder from the content type, which comes from the extension.
+# Accepted upload extensions, and the content type each is sent with.
 AUDIO_TYPES = {
     "flac": "audio/flac", "m4a": "audio/mp4", "mp3": "audio/mpeg", "mp4": "audio/mp4",
     "mpeg": "audio/mpeg", "mpga": "audio/mpeg", "ogg": "audio/ogg", "wav": "audio/wav",
@@ -380,12 +380,12 @@ def _unwrap_input(request: Any) -> Any:
         request.get("input"), dict) else request
 
 
-def _speech_references(data: Dict[str, Any]) -> List[Any]:
+def _speech_references(data: Dict[str, Any]) -> Dict[str, Any]:
     """ref_audio, ref_audio_2, and the engine's `references` alias ([{"audio_path": ...}])."""
     refs = data.get("references")
-    paths = [r.get("audio_path") if isinstance(r, dict) else r
-             for r in (refs if isinstance(refs, list) else [refs] if refs is not None else [])]
-    return [*_flatten([data.get("ref_audio")]), data.get("ref_audio_2"), *paths]
+    return {"ref_audio": data.get("ref_audio"), "ref_audio_2": data.get("ref_audio_2"),
+            "references": [r.get("audio_path") for r in refs if isinstance(r, dict)]
+            if isinstance(refs, list) else []}
 
 
 def speech_request_parser(request: Any) -> Dict[str, Any]:
@@ -394,8 +394,9 @@ def speech_request_parser(request: Any) -> Dict[str, Any]:
         raise JsonDataException({"payload": "must be an object"})
     _drop_empty(request, ("ref_audio", "ref_audio_2"))
     refs = _speech_references(request)
-    _check_budget(refs, "ref_audio")
-    _check_reference([r for r in refs if r is not None], "ref_audio")
+    _check_budget(_flatten(list(refs.values())), "ref_audio")
+    for field, value in refs.items():
+        _check_reference(value, field)
     return request
 
 
@@ -430,7 +431,8 @@ def _speech_workload(data: Dict[str, Any]) -> float:
     """Text, plus one reference request per voice-clone reference."""
     text = data.get("input")
     chars = len(text) if isinstance(text, str) else 0
-    chars += REF_SPEECH_CHARS * sum(1 for r in _speech_references(data) if isinstance(r, str))
+    refs = _flatten(list(_speech_references(data).values()))
+    chars += REF_SPEECH_CHARS * sum(1 for r in refs if isinstance(r, str))
     return _in_request_units(chars, REF_SPEECH_CHARS)
 
 
@@ -450,7 +452,7 @@ def _speech_batch_workload(data: Dict[str, Any]) -> float:
 def _chat_batch_workload(data: Dict[str, Any]) -> float:
     messages = data.get("messages")
     count = len(messages) if isinstance(messages, list) else 0
-    per = data.get("max_tokens") or data.get("max_completion_tokens") or BENCHMARK_MAX_TOKENS
+    per = data.get("max_completion_tokens") or data.get("max_tokens") or BENCHMARK_MAX_TOKENS
     tokens = _number(per, BENCHMARK_MAX_TOKENS) * count
     return _in_request_units(tokens, BENCHMARK_MAX_TOKENS)
 

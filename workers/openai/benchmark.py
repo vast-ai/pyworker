@@ -32,8 +32,10 @@ REF_RERANK_CHARS = RERANK_DOCS * (RERANK_QUERY_CHARS + RERANK_DOC_CHARS)
 try:
     REF_EMBED_CHARS = int(os.environ.get("BENCHMARK_EMBED_CHARS") or 600)   # empty = unset
 except ValueError:
-    print(f"WARNING: BENCHMARK_EMBED_CHARS={os.environ['BENCHMARK_EMBED_CHARS']!r} is not an "
-          "integer; using 600", flush=True)
+    REF_EMBED_CHARS = 0
+if REF_EMBED_CHARS <= 0:
+    print(f"WARNING: BENCHMARK_EMBED_CHARS={os.environ['BENCHMARK_EMBED_CHARS']!r} is not a "
+          "positive integer; using 600", flush=True)
     REF_EMBED_CHARS = 600
 
 

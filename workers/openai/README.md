@@ -33,13 +33,15 @@ takes only POSTs.
 
 References (`url` on edits; `ref_audio`, `ref_audio_2` and `references[].audio_path` on
 speech; `ref_audio` on speech batches; the URL in each video reference) are passed to the
-engine, not uploaded, so they must be an http(s) URL or a `data:` URI; anything else, a
-file path included, is refused. http(s) URLs are fetched by the engine from inside the instance and are not
-filtered here, as with `image_url` on chat.
+engine, not uploaded, so they must be an http(s) URL or a `data:` URI; anything else in
+these fields, a file path included, is refused. http(s) URLs are fetched by the engine from
+inside the instance and are not filtered here, as with `image_url` on chat.
 
 `lora` and `frame_interpolation_model_path` name files already on the instance and are
 passed through as given: bake a LoRA into a custom image (recommended), or fetch it with
-the provisioning script.
+the provisioning script. `extra_params` is also passed through as given; some vLLM-Omni
+pipelines read instance paths from it (Cosmos3 `control_path`, LongCat-Avatar `audio_path`
+and `image_path`).
 
 vLLM-Omni reads an edit mask from `mask_image`, not the `mask` the OpenAI API names, so
 a `mask` is not applied there.

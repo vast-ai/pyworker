@@ -215,8 +215,9 @@ async def demo_route(client: Serverless, args: argparse.Namespace) -> None:
                                    {**model, "query": RERANK_QUERY, "documents": RERANK_DOCS}, args.endpoint)
         print(RERANK_QUERY)
         results = resp if isinstance(resp, list) else resp.get("results", [])   # SGLang: a list
-        for r in sorted(results, key=lambda r: -r.get("relevance_score", r.get("score", 0))):
-            print(f"  {r.get('relevance_score', r.get('score')):.3g}  {RERANK_DOCS[r['index']]}")
+        for score, i in sorted(((r.get("relevance_score", r.get("score", 0)), r["index"])
+                                for r in results), reverse=True):
+            print(f"  {score:.3g}  {RERANK_DOCS[i]}")
     elif args.score:
         resp, _ = await call_route(client, "/v1/score",
                                    {**model, "queries": RERANK_QUERY, "items": RERANK_DOCS}, args.endpoint)

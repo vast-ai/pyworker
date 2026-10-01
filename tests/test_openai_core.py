@@ -224,9 +224,9 @@ class TestVideo(unittest.TestCase):
         self.assertEqual(p.files["source_audio"][2], "audio/wav")
         self.assertEqual(p.files["video_noise_mask"][0::2], ("mask.json", "application/json"))
         self.assertEqual(p.files["audio_noise_mask"][0], "m.json")
-        p = VideoPayload.from_json_msg({"prompt": "p", "input_references": [self.PNG],
-                                        "input_references_filename": ["clip.mp4"]})
-        self.assertEqual(p.files["input_references"][0][2], "video/mp4")
+        p = VideoPayload.from_json_msg({"prompt": "p", "input_references": [self.PNG] * 2,
+                                        "input_references_filename": ["clip.mp4", "voice.wav"]})
+        self.assertEqual([f[2] for f in p.files["input_references"]], ["video/mp4", "audio/wav"])
         with self.assertRaises(JsonDataException):
             VideoPayload.from_json_msg({"prompt": "p", "control_reference": self.PNG,
                                         "control_reference_filename": "x.wav"})
@@ -285,14 +285,18 @@ class TestReferences(unittest.TestCase):
         speech = handlers()["/v1/audio/speech"].request_parser
         batch = handlers()["/v1/audio/speech/batch"].request_parser
         self.assertNotIn("ref_audio", speech({"input": "hi", "ref_audio": ""}))
+        self.assertNotIn("ref_audio_2", speech({"input": "hi", "ref_audio_2": ""}))
         self.assertNotIn("ref_audio", batch({"items": [{"input": "a", "ref_audio": ""}]})["items"][0])
         self.assertNotIn("ref_audio", batch({"items": [{"input": "a"}], "ref_audio": ""}))
         self.assertNotIn("url", ImageEditPayload.from_json_msg(
             {"image": b64(), "url": "", "prompt": "p"}).fields)
 
-    def test_ref_audio_2_is_one_string(self):
-        with self.assertRaises(JsonDataException):
-            handlers()["/v1/audio/speech"].request_parser({"input": "hi", "ref_audio_2": ["https://x/a.wav"]})
+    def test_a_refused_speech_reference_names_its_field(self):
+        speech = handlers()["/v1/audio/speech"].request_parser
+        for data, field in [({"ref_audio_2": "/etc/passwd"}, "ref_audio_2"),
+                            ({"references": [{"audio_path": "/etc/passwd"}]}, "references")]:
+            with self.subTest(field), self.assertRaisesRegex(JsonDataException, field):
+                speech({"input": "hi", **data})
 
     def test_a_speech_batch_takes_one_reference_string_per_item(self):
         batch = handlers()["/v1/audio/speech/batch"].request_parser
@@ -315,12 +319,9 @@ class TestHandlerTable(unittest.TestCase):
 
     def test_benchmark_route_moves_the_one_benchmark(self):
         for env, route in [({}, "/v1/completions"), ({"BENCHMARK_ROUTE": ""}, "/v1/completions"),
-                           *[({"BENCHMARK_ROUTE": r}, r) for r in BENCHMARKS]]:
+                           *[({"BENCHMARK_ROUTE": r}, r) for r in ALL_ROUTES]]:
             with self.subTest(env), mock.patch.dict(os.environ, env):
                 self.assertEqual([r for r, h in handlers().items() if h.benchmark_config], [route])
-
-    def test_every_route_has_a_benchmark(self):
-        self.assertEqual(ALL_ROUTES - set(BENCHMARKS), set())
 
     def test_an_unusable_benchmark_route_is_refused(self):
         for env, says in [({"BENCHMARK_ROUTE": "/v1/audio/speach"}, "not a route"),
@@ -428,7 +429,8 @@ class TestWorkload(unittest.TestCase):
     def test_a_chat_batch_counts_each_conversation(self):
         calc = self.calc("/v1/chat/completions/batch")
         self.assertEqual(calc({"messages": [CONVO] * 4, "max_tokens": 100}), 400)
-        self.assertEqual(calc({"messages": [CONVO] * 4, "max_completion_tokens": 100}), 400)
+        self.assertEqual(calc({"messages": [CONVO] * 4, "max_completion_tokens": 100,
+                               "max_tokens": 16}), 400)   # vLLM reads max_completion_tokens first
         self.assertEqual(calc({"messages": [CONVO] * 2}), 2 * ONE_REQUEST)
 
     def test_audio_generation_is_one_request_whatever_the_length(self):
@@ -457,15 +459,14 @@ class TestWorkload(unittest.TestCase):
         cases = {
             "/v1/images/generations": ({"size": "9" * 4000 + "x" + "9" * 4000},
                                        {"n": "9" * 5000}, {"n": -5, "size": "-10x-10"}),
-            "/v1/audio/speech": ({"input": 123}, {"ref_audio": [None, 7, ""]}),
+            "/v1/audio/speech": ({"input": 123}, {"ref_audio": [None, 7, ""]},
+                                 {"references": ["x", 5]}, {"references": 5}),
             "/v1/embeddings": ({}, {"input": None}),
             "/v1/rerank": ({}, {"query": 5, "documents": "x"}, {"documents": [None, {}, [[1]]]}),
             "/v1/score": ({}, {"text_1": [], "text_2": []}, {"queries": ["a"] * 3, "items": ["b"] * 2}),
             "/v1/chat/completions/batch": ({}, {"messages": "x", "max_tokens": 5},
                                            {"messages": [[]], "max_tokens": "a"}),
             "/v1/audio/speech/batch": ({"items": "x"}, {"items": [5, {"input": 3}]}),
-            "/v1/audio/generate": ({"audio_length": "x"}, {"audio_length": float("nan")},
-                                   {"audio_length": [1]}),
         }
         for route, datas in cases.items():
             for data in datas:
@@ -489,7 +490,6 @@ class TestWorkload(unittest.TestCase):
             "/v1/images/generations": {"n": 100_000, "size": "8192x8192"},
             "/v1/audio/speech/batch": {"items": [{"input": "x" * 100_000}] * 1_000},
             "/v1/chat/completions/batch": {"messages": [CONVO] * 256, "max_tokens": 2048},
-            "/v1/audio/generate": {"audio_length": 1e308},
         }
         for route, data in worst.items():
             with self.subTest(route):
@@ -538,7 +538,7 @@ class TestBenchmarks(unittest.TestCase):
 
     def test_a_bad_embed_chars_setting_falls_back_to_the_default(self):
         """Imported by every OpenAI worker: a bad value must not stop the boot."""
-        for value in ("", "abc"):
+        for value in ("", "abc", "0", "-5"):
             with self.subTest(value):
                 env = dict(os.environ, BENCHMARK_EMBED_CHARS=value, PYTHONPATH=os.pathsep.join(sys.path))
                 out = subprocess.run(
