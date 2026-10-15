@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig, BenchmarkConfig
 from vastai.serverless.server.lib.data_types import ApiPayload, JsonDataException
 
+from workers.openai import routes
 from workers.openai.benchmark import (
     BENCHMARKS,
     DEFAULT_BENCHMARK_ROUTE,
@@ -524,10 +525,9 @@ def _embeddings_workload(data: Dict[str, Any]) -> float:
     return _in_request_units(chars, REF_EMBED_CHARS)
 
 
-UPLOAD_ROUTES = ("/v1/images/edits", "/v1/videos/sync",
-                 "/v1/audio/transcriptions", "/v1/audio/translations")
+UPLOAD_ROUTES = routes.UPLOAD_ROUTES
 # Served, with BENCHMARK_ROUTE, when OPENAI_ROUTES is unset: what the worker served before.
-DEFAULT_ROUTES = ("/v1/completions", "/v1/chat/completions")
+DEFAULT_ROUTES = (routes.COMPLETIONS, routes.CHAT)
 
 
 def benchmark_route() -> str:
@@ -585,27 +585,27 @@ def build_config(defaults: EngineDefaults) -> dict:
 
     tokens = lambda data: data.get("max_tokens", 0)   # noqa: E731
     handlers = [
-        route("/v1/completions", workload_calculator=tokens, request_parser=request_parser),
-        route("/v1/chat/completions", workload_calculator=tokens,
+        route(routes.COMPLETIONS, workload_calculator=tokens, request_parser=request_parser),
+        route(routes.CHAT, workload_calculator=tokens,
               request_parser=request_parser),
-        route("/v1/chat/completions/batch", workload_calculator=_chat_batch_workload,
+        route(routes.CHAT_BATCH, workload_calculator=_chat_batch_workload,
               request_parser=request_parser),
-        route("/v1/audio/speech", workload_calculator=_speech_workload,
+        route(routes.SPEECH, workload_calculator=_speech_workload,
               request_parser=speech_request_parser),
-        route("/v1/audio/speech/batch", workload_calculator=_speech_batch_workload,
+        route(routes.SPEECH_BATCH, workload_calculator=_speech_batch_workload,
               request_parser=speech_batch_request_parser),
-        route("/v1/audio/generate", workload_calculator=_audio_generate_workload,
+        route(routes.AUDIO_GENERATE, workload_calculator=_audio_generate_workload,
               request_parser=_unwrap_input),
-        route("/v1/embeddings", workload_calculator=_embeddings_workload,
+        route(routes.EMBEDDINGS, workload_calculator=_embeddings_workload,
               request_parser=_unwrap_input),
-        route("/v1/rerank", workload_calculator=_rerank_workload, request_parser=request_parser),
-        route("/v1/score", workload_calculator=_score_workload, request_parser=request_parser),
-        route("/v1/images/generations", workload_calculator=_image_workload,
+        route(routes.RERANK, workload_calculator=_rerank_workload, request_parser=request_parser),
+        route(routes.SCORE, workload_calculator=_score_workload, request_parser=request_parser),
+        route(routes.IMAGES, workload_calculator=_image_workload,
               request_parser=request_parser),
-        route("/v1/images/edits", payload_class=ImageEditPayload),
-        route("/v1/audio/transcriptions", payload_class=TranscriptionPayload),
-        route("/v1/audio/translations", payload_class=TranscriptionPayload),
-        route("/v1/videos/sync", payload_class=VideoPayload),
+        route(routes.IMAGE_EDITS, payload_class=ImageEditPayload),
+        route(routes.TRANSCRIPTIONS, payload_class=TranscriptionPayload),
+        route(routes.TRANSLATIONS, payload_class=TranscriptionPayload),
+        route(routes.VIDEO, payload_class=VideoPayload),
     ]
 
     config = dict(

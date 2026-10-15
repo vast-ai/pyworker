@@ -6,9 +6,11 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import unittest
 import wave
 import zlib
@@ -25,7 +27,7 @@ from vastai.serverless.server.lib.data_types import (  # noqa: E402
     JsonDataException, ModelMetrics, RequestMetrics)
 
 import workers.openai.core as core  # noqa: E402
-from workers.openai import benchmark  # noqa: E402
+from workers.openai import benchmark, routes  # noqa: E402
 from workers.openai.benchmark import BENCHMARKS  # noqa: E402
 from workers.openai.core import (  # noqa: E402
     BENCHMARK_MAX_TOKENS,
@@ -48,6 +50,8 @@ CONVO = [{"role": "user", "content": "hi"}]
 
 DEFAULTS = EngineDefaults(name="stub", model_log_file="/tmp/stub.log",
                           load_log_msgs=["loaded"], error_log_msgs=["failed"])
+# The public paths, spelled out rather than read from routes.py: if a constant there
+# changed, the worker and client would still agree while every caller broke.
 ALL_ROUTES = {"/v1/completions", "/v1/chat/completions", "/v1/chat/completions/batch",
               "/v1/audio/speech", "/v1/audio/speech/batch", "/v1/audio/generate",
               "/v1/embeddings", "/v1/images/generations", "/v1/images/edits",
@@ -154,7 +158,7 @@ class TestUploads(unittest.TestCase):
 
     def test_uploads_over_the_request_budget_are_refused_before_decoding(self):
         ref = "A" * 4096
-        speech = handlers()["/v1/audio/speech"].request_parser
+        speech = handlers()[routes.SPEECH].request_parser
         cases = [
             lambda: ImageEditPayload.from_json_msg({"image": [ref] * 3, "prompt": "p"}),
             lambda: speech({"input": "hi", "ref_audio": [ref, ref], "ref_audio_2": ref}),
@@ -253,8 +257,8 @@ class TestReferences(unittest.TestCase):
                INLINE, "/" * 78 + "etc/passwd")
 
     def places(self):
-        speech = handlers()["/v1/audio/speech"].request_parser
-        batch = handlers()["/v1/audio/speech/batch"].request_parser
+        speech = handlers()[routes.SPEECH].request_parser
+        batch = handlers()[routes.SPEECH_BATCH].request_parser
         return {
             "edit url": lambda v: ImageEditPayload.from_json_msg({"url": v, "prompt": "p"}),
             "edit url[]": lambda v: ImageEditPayload.from_json_msg({"url[]": [v], "prompt": "p"}),
@@ -279,11 +283,11 @@ class TestReferences(unittest.TestCase):
     def test_an_oversized_data_uri_reference_is_refused(self):
         big = "data:audio/wav;base64," + "A" * (4 * (core.MAX_UPLOAD_BYTES // 3 + 64))
         with self.assertRaisesRegex(JsonDataException, "larger than"):
-            handlers()["/v1/audio/speech"].request_parser({"input": "hi", "ref_audio": big})
+            handlers()[routes.SPEECH].request_parser({"input": "hi", "ref_audio": big})
 
     def test_an_empty_reference_is_dropped(self):
-        speech = handlers()["/v1/audio/speech"].request_parser
-        batch = handlers()["/v1/audio/speech/batch"].request_parser
+        speech = handlers()[routes.SPEECH].request_parser
+        batch = handlers()[routes.SPEECH_BATCH].request_parser
         self.assertNotIn("ref_audio", speech({"input": "hi", "ref_audio": ""}))
         self.assertNotIn("ref_audio_2", speech({"input": "hi", "ref_audio_2": ""}))
         self.assertNotIn("ref_audio", batch({"items": [{"input": "a", "ref_audio": ""}]})["items"][0])
@@ -292,14 +296,14 @@ class TestReferences(unittest.TestCase):
             {"image": b64(), "url": "", "prompt": "p"}).fields)
 
     def test_a_refused_speech_reference_names_its_field(self):
-        speech = handlers()["/v1/audio/speech"].request_parser
+        speech = handlers()[routes.SPEECH].request_parser
         for data, field in [({"ref_audio_2": "/etc/passwd"}, "ref_audio_2"),
                             ({"references": [{"audio_path": "/etc/passwd"}]}, "references")]:
             with self.subTest(field), self.assertRaisesRegex(JsonDataException, field):
                 speech({"input": "hi", **data})
 
     def test_a_speech_batch_takes_one_reference_string_per_item(self):
-        batch = handlers()["/v1/audio/speech/batch"].request_parser
+        batch = handlers()[routes.SPEECH_BATCH].request_parser
         for data in ({"items": [{"input": "a", "ref_audio": ["https://x/a.wav"]}]},
                      {"items": {"input": "a"}}, {"items": ["a"]}):
             with self.subTest(str(data)), self.assertRaises(JsonDataException):
@@ -311,22 +315,22 @@ class TestHandlerTable(unittest.TestCase):
         """The shared parser unwraps a top-level `input`; these routes unwrap only a dict."""
         body = {"model": "t", "input": "Hi", "voice": "a"}
         self.assertEqual(request_parser(dict(body)), "Hi")
-        for route in ("/v1/audio/speech", "/v1/embeddings", "/v1/audio/generate"):
+        for route in (routes.SPEECH, routes.EMBEDDINGS, routes.AUDIO_GENERATE):
             with self.subTest(route):
                 parser = handlers()[route].request_parser
                 self.assertEqual(parser(dict(body)), body)
                 self.assertEqual(parser({"input": dict(body)}), body)
 
     def test_benchmark_route_moves_the_one_benchmark(self):
-        for env, route in [({}, "/v1/completions"), ({"BENCHMARK_ROUTE": ""}, "/v1/completions"),
+        for env, route in [({}, routes.COMPLETIONS), ({"BENCHMARK_ROUTE": ""}, routes.COMPLETIONS),
                            *[({"BENCHMARK_ROUTE": r}, r) for r in ALL_ROUTES]]:
             with self.subTest(env), mock.patch.dict(os.environ, env):
                 self.assertEqual([r for r, h in handlers().items() if h.benchmark_config], [route])
 
     def test_an_unusable_benchmark_route_is_refused(self):
         for env, says in [({"BENCHMARK_ROUTE": "/v1/audio/speach"}, "not a route"),
-                          ({"BENCHMARK_ROUTE": "/v1/audio/speech",
-                            "OPENAI_ROUTES": "/v1/completions"}, "not served")]:
+                          ({"BENCHMARK_ROUTE": routes.SPEECH,
+                            "OPENAI_ROUTES": routes.COMPLETIONS}, "not served")]:
             with self.subTest(env), mock.patch.dict(os.environ, env), \
                     self.assertRaisesRegex(RuntimeError, says):
                 handlers()
@@ -335,29 +339,29 @@ class TestHandlerTable(unittest.TestCase):
 class TestServedRoutes(unittest.TestCase):
     def test_the_default_is_what_llm_deployments_served_before(self):
         with mock.patch.dict(os.environ, {"OPENAI_ROUTES": ""}):
-            self.assertEqual(set(handlers()), {"/v1/completions", "/v1/chat/completions"})
+            self.assertEqual(set(handlers()), {routes.COMPLETIONS, routes.CHAT})
         with mock.patch.dict(os.environ, {"OPENAI_ROUTES": "",
-                                          "BENCHMARK_ROUTE": "/v1/audio/transcriptions"}):
-            self.assertEqual(set(handlers()), {"/v1/completions", "/v1/chat/completions",
-                                               "/v1/audio/transcriptions"})
+                                          "BENCHMARK_ROUTE": routes.TRANSCRIPTIONS}):
+            self.assertEqual(set(handlers()), {routes.COMPLETIONS, routes.CHAT,
+                                               routes.TRANSCRIPTIONS})
         self.assertEqual(set(handlers()), ALL_ROUTES)
 
     def test_the_startup_log_names_the_routes(self):
-        lines = startup_log({"OPENAI_ROUTES": "/v1/audio/speech,/v1/embedding",
-                             "BENCHMARK_ROUTE": "/v1/audio/speech"})
+        lines = startup_log({"OPENAI_ROUTES": f"{routes.SPEECH},/v1/embedding",
+                             "BENCHMARK_ROUTE": routes.SPEECH})
         self.assertIn("unknown routes: /v1/embedding", lines)
-        self.assertIn("serving: /v1/audio/speech", lines)
-        self.assertIn("benchmarking: /v1/audio/speech", lines)
+        self.assertIn(f"serving: {routes.SPEECH}", lines)
+        self.assertIn(f"benchmarking: {routes.SPEECH}", lines)
 
     def test_an_old_sdk_is_only_reported_when_an_upload_route_is_asked_for(self):
-        for routes, reported in (("", False), ("/v1/completions,/v1/images/edits", True)):
-            with self.subTest(routes), mock.patch.object(core, "ApiPayload", OldApiPayload):
-                self.assertEqual("cannot send multipart" in startup_log({"OPENAI_ROUTES": routes}),
+        for wanted, reported in (("", False), (f"{routes.COMPLETIONS},{routes.IMAGE_EDITS}", True)):
+            with self.subTest(wanted), mock.patch.object(core, "ApiPayload", OldApiPayload):
+                self.assertEqual("cannot send multipart" in startup_log({"OPENAI_ROUTES": wanted}),
                                  reported)
 
     def test_an_upload_benchmark_route_on_an_old_sdk_names_the_sdk(self):
         with mock.patch.object(core, "ApiPayload", OldApiPayload), \
-                mock.patch.dict(os.environ, {"BENCHMARK_ROUTE": "/v1/audio/transcriptions"}), \
+                mock.patch.dict(os.environ, {"BENCHMARK_ROUTE": routes.TRANSCRIPTIONS}), \
                 self.assertRaisesRegex(RuntimeError, "multipart"):
             handlers()
 
@@ -374,10 +378,10 @@ class TestWorkload(unittest.TestCase):
         return handlers()[route].workload_calculator
 
     def test_completions_units_are_unchanged(self):
-        self.assertEqual(self.calc("/v1/completions")({"max_tokens": 500}), 500)
+        self.assertEqual(self.calc(routes.COMPLETIONS)({"max_tokens": 500}), 500)
 
     def test_images(self):
-        calc = self.calc("/v1/images/generations")
+        calc = self.calc(routes.IMAGES)
         self.assertEqual(calc({"size": "1024x1024", "n": 2}), 2 * ONE_REQUEST)
         self.assertEqual(calc({"size": "512x512", "n": 4}), ONE_REQUEST)
         for size in (None, "auto", "nonsense"):
@@ -392,29 +396,29 @@ class TestWorkload(unittest.TestCase):
         for value in ("x" * chars, ["x" * (chars // 2)] * 2, list(range(tokens)),
                       [list(range(tokens // 2))] * 2):
             with self.subTest(str(value)[:20]):
-                self.assertEqual(self.calc("/v1/embeddings")({"input": value}), ONE_REQUEST)
+                self.assertEqual(self.calc(routes.EMBEDDINGS)({"input": value}), ONE_REQUEST)
 
     def test_rerank_and_score_count_each_query_document_pair(self):
         q, d = "q" * benchmark.RERANK_QUERY_CHARS, "d" * benchmark.RERANK_DOC_CHARS
         docs = [d] * benchmark.RERANK_DOCS
-        for route, data in [("/v1/rerank", {"query": q, "documents": docs}),
-                            ("/v1/score", {"queries": q, "documents": docs}),
-                            ("/v1/score", {"queries": q, "items": docs}),
-                            ("/v1/score", {"text_1": q, "text_2": docs}),
-                            ("/v1/score", {"data_1": [q] * len(docs), "data_2": docs})]:
+        for route, data in [(routes.RERANK, {"query": q, "documents": docs}),
+                            (routes.SCORE, {"queries": q, "documents": docs}),
+                            (routes.SCORE, {"queries": q, "items": docs}),
+                            (routes.SCORE, {"text_1": q, "text_2": docs}),
+                            (routes.SCORE, {"data_1": [q] * len(docs), "data_2": docs})]:
             with self.subTest((route, list(data))):
                 self.assertEqual(self.calc(route)(data), ONE_REQUEST)
-        pairwise = self.calc("/v1/score")({"queries": [q, q * 10], "items": [d, d]})
+        pairwise = self.calc(routes.SCORE)({"queries": [q, q * 10], "items": [d, d]})
         self.assertEqual(pairwise, core._in_request_units(len(q) * 11 + 2 * len(d),
                                                           benchmark.REF_RERANK_CHARS))
         image = {"type": "image_url", "image_url": {"url": "u"}}
-        one_query = self.calc("/v1/rerank")({"query": [{"type": "text", "text": q}, image],
-                                             "documents": docs})
+        one_query = self.calc(routes.RERANK)({"query": [{"type": "text", "text": q}, image],
+                                              "documents": docs})
         self.assertEqual(one_query, core._in_request_units(
             len(docs) * 2 * benchmark.RERANK_DOC_CHARS, benchmark.REF_RERANK_CHARS))
 
     def test_each_clone_reference_adds_one_request(self):
-        calc, base = self.calc("/v1/audio/speech"), {"input": "x" * 500}
+        calc, base = self.calc(routes.SPEECH), {"input": "x" * 500}
         self.assertEqual(calc(base), ONE_REQUEST)
         self.assertEqual(calc({**base, "ref_audio": "A" * 100_000}), 2 * ONE_REQUEST)
         self.assertEqual(calc({**base, "ref_audio": ["u1", "u2"]}), 3 * ONE_REQUEST)
@@ -422,19 +426,19 @@ class TestWorkload(unittest.TestCase):
         self.assertEqual(calc({**base, "references": [{"audio_path": "u1"}]}), 2 * ONE_REQUEST)
 
     def test_a_speech_batch_counts_the_batch_reference_for_each_item(self):
-        calc, item = self.calc("/v1/audio/speech/batch"), {"input": "x" * 500}
+        calc, item = self.calc(routes.SPEECH_BATCH), {"input": "x" * 500}
         self.assertEqual(calc({"items": [item] * 2}), 2 * ONE_REQUEST)
         self.assertEqual(calc({"items": [item] * 2, "ref_audio": "u"}), 4 * ONE_REQUEST)
 
     def test_a_chat_batch_counts_each_conversation(self):
-        calc = self.calc("/v1/chat/completions/batch")
+        calc = self.calc(routes.CHAT_BATCH)
         self.assertEqual(calc({"messages": [CONVO] * 4, "max_tokens": 100}), 400)
         self.assertEqual(calc({"messages": [CONVO] * 4, "max_completion_tokens": 100,
                                "max_tokens": 16}), 400)   # vLLM reads max_completion_tokens first
         self.assertEqual(calc({"messages": [CONVO] * 2}), 2 * ONE_REQUEST)
 
     def test_audio_generation_is_one_request_whatever_the_length(self):
-        calc = self.calc("/v1/audio/generate")
+        calc = self.calc(routes.AUDIO_GENERATE)
         self.assertEqual(calc({"audio_length": 1}), ONE_REQUEST)
         self.assertEqual(calc({"audio_length": 47}), ONE_REQUEST)
 
@@ -457,16 +461,16 @@ class TestWorkload(unittest.TestCase):
 
     def test_malformed_input_is_priced_without_raising(self):
         cases = {
-            "/v1/images/generations": ({"size": "9" * 4000 + "x" + "9" * 4000},
-                                       {"n": "9" * 5000}, {"n": -5, "size": "-10x-10"}),
-            "/v1/audio/speech": ({"input": 123}, {"ref_audio": [None, 7, ""]},
-                                 {"references": ["x", 5]}, {"references": 5}),
-            "/v1/embeddings": ({}, {"input": None}),
-            "/v1/rerank": ({}, {"query": 5, "documents": "x"}, {"documents": [None, {}, [[1]]]}),
-            "/v1/score": ({}, {"text_1": [], "text_2": []}, {"queries": ["a"] * 3, "items": ["b"] * 2}),
-            "/v1/chat/completions/batch": ({}, {"messages": "x", "max_tokens": 5},
-                                           {"messages": [[]], "max_tokens": "a"}),
-            "/v1/audio/speech/batch": ({"items": "x"}, {"items": [5, {"input": 3}]}),
+            routes.IMAGES: ({"size": "9" * 4000 + "x" + "9" * 4000},
+                            {"n": "9" * 5000}, {"n": -5, "size": "-10x-10"}),
+            routes.SPEECH: ({"input": 123}, {"ref_audio": [None, 7, ""]},
+                            {"references": ["x", 5]}, {"references": 5}),
+            routes.EMBEDDINGS: ({}, {"input": None}),
+            routes.RERANK: ({}, {"query": 5, "documents": "x"}, {"documents": [None, {}, [[1]]]}),
+            routes.SCORE: ({}, {"text_1": [], "text_2": []}, {"queries": ["a"] * 3, "items": ["b"] * 2}),
+            routes.CHAT_BATCH: ({}, {"messages": "x", "max_tokens": 5},
+                                {"messages": [[]], "max_tokens": "a"}),
+            routes.SPEECH_BATCH: ({"items": "x"}, {"items": [5, {"input": 3}]}),
         }
         for route, datas in cases.items():
             for data in datas:
@@ -484,22 +488,22 @@ class TestWorkload(unittest.TestCase):
         big = b64(b"\x00" * core.MAX_UPLOAD_BYTES)
         h = handlers()
         worst = {
-            "/v1/audio/speech": {"input": "x" * 100_000, "ref_audio": ["A" * 10_000] * 10},
-            "/v1/embeddings": {"input": ["x" * 10_000] * 1_000},
-            "/v1/rerank": {"query": "x" * 10_000, "documents": ["x" * 10_000] * 1_000},
-            "/v1/images/generations": {"n": 100_000, "size": "8192x8192"},
-            "/v1/audio/speech/batch": {"items": [{"input": "x" * 100_000}] * 1_000},
-            "/v1/chat/completions/batch": {"messages": [CONVO] * 256, "max_tokens": 2048},
+            routes.SPEECH: {"input": "x" * 100_000, "ref_audio": ["A" * 10_000] * 10},
+            routes.EMBEDDINGS: {"input": ["x" * 10_000] * 1_000},
+            routes.RERANK: {"query": "x" * 10_000, "documents": ["x" * 10_000] * 1_000},
+            routes.IMAGES: {"n": 100_000, "size": "8192x8192"},
+            routes.SPEECH_BATCH: {"items": [{"input": "x" * 100_000}] * 1_000},
+            routes.CHAT_BATCH: {"messages": [CONVO] * 256, "max_tokens": 2048},
         }
         for route, data in worst.items():
             with self.subTest(route):
                 wt = wait_time_with_one_in_flight(h[route].workload_calculator(data))
                 self.assertLess(wt, h[route].max_queue_time)
         for route, payload in [
-            ("/v1/audio/transcriptions", TranscriptionPayload.from_json_msg({"file": big})),
-            ("/v1/images/edits", ImageEditPayload.from_json_msg(
+            (routes.TRANSCRIPTIONS, TranscriptionPayload.from_json_msg({"file": big})),
+            (routes.IMAGE_EDITS, ImageEditPayload.from_json_msg(
                 {"image": [big] * 2, "prompt": "p", "n": 100_000, "size": "8192x8192"})),
-            ("/v1/videos/sync", VideoPayload.from_json_msg(
+            (routes.VIDEO, VideoPayload.from_json_msg(
                 {"prompt": "p", "size": "8192x8192", "num_frames": 10**9,
                  "num_outputs_per_prompt": 10})),
         ]:
@@ -511,20 +515,20 @@ class TestWorkload(unittest.TestCase):
 class TestBenchmarks(unittest.TestCase):
     def test_every_benchmark_request_weighs_one_reference_request(self):
         """Otherwise the score means something different depending on the route."""
-        weigh = {"/v1/completions": lambda b: b["max_tokens"],
-                 "/v1/chat/completions": lambda b: b["max_tokens"],
-                 "/v1/chat/completions/batch": core._chat_batch_workload,
-                 "/v1/embeddings": core._embeddings_workload,
-                 "/v1/rerank": core._rerank_workload,
-                 "/v1/score": core._score_workload,
-                 "/v1/audio/speech": core._speech_workload,
-                 "/v1/audio/speech/batch": core._speech_batch_workload,
-                 "/v1/audio/generate": core._audio_generate_workload,
-                 "/v1/images/generations": core._image_workload,
-                 "/v1/images/edits": lambda _: ImageEditPayload.for_test().count_workload(),
-                 "/v1/audio/transcriptions": lambda _: TranscriptionPayload.for_test().count_workload(),
-                 "/v1/audio/translations": lambda _: TranscriptionPayload.for_test().count_workload(),
-                 "/v1/videos/sync": lambda _: VideoPayload.for_test().count_workload()}
+        weigh = {routes.COMPLETIONS: lambda b: b["max_tokens"],
+                 routes.CHAT: lambda b: b["max_tokens"],
+                 routes.CHAT_BATCH: core._chat_batch_workload,
+                 routes.EMBEDDINGS: core._embeddings_workload,
+                 routes.RERANK: core._rerank_workload,
+                 routes.SCORE: core._score_workload,
+                 routes.SPEECH: core._speech_workload,
+                 routes.SPEECH_BATCH: core._speech_batch_workload,
+                 routes.AUDIO_GENERATE: core._audio_generate_workload,
+                 routes.IMAGES: core._image_workload,
+                 routes.IMAGE_EDITS: lambda _: ImageEditPayload.for_test().count_workload(),
+                 routes.TRANSCRIPTIONS: lambda _: TranscriptionPayload.for_test().count_workload(),
+                 routes.TRANSLATIONS: lambda _: TranscriptionPayload.for_test().count_workload(),
+                 routes.VIDEO: lambda _: VideoPayload.for_test().count_workload()}
         for route, b in BENCHMARKS.items():
             with self.subTest(route):
                 weight = weigh[route](b.generator() if b.generator else None)
@@ -584,6 +588,36 @@ class TestBenchmarks(unittest.TestCase):
         self.assertEqual(len(raw), h * (1 + w * 3))
         pixels = bytes(b for i, b in enumerate(raw) if i % (1 + w * 3))
         self.assertGreater(len(set(pixels)), 200, "the image is effectively uniform")
+
+
+class TestClient(unittest.TestCase):
+    REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def test_the_client_runs_by_path_and_as_a_module(self):
+        """Both worked before routes.py existed."""
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        by_path = [sys.executable, os.path.join(self.REPO, "workers", "openai", "client.py"), "--help"]
+        as_module = [sys.executable, "-m", "workers.openai.client", "--help"]
+        for argv, cwd in ((by_path, os.path.dirname(self.REPO)), (as_module, self.REPO)):
+            with self.subTest(argv[1]):
+                out = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True)
+                self.assertEqual(out.returncode, 0, out.stderr)
+                self.assertIn(routes.RERANK, out.stdout)
+
+    def test_a_client_copied_out_alone_runs_and_its_routes_match(self):
+        """It needed only vastai before routes.py existed, so it carries its own copy."""
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        with tempfile.TemporaryDirectory() as tmp:
+            shutil.copy(os.path.join(self.REPO, "workers", "openai", "client.py"), tmp)
+            out = subprocess.run([sys.executable, "client.py", "--help"],
+                                 cwd=tmp, env=env, capture_output=True, text=True)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            out = subprocess.run(
+                [sys.executable, "-c", "import json, client; print(json.dumps(vars(client.routes)))"],
+                cwd=tmp, env=env, capture_output=True, text=True)
+            self.assertEqual(out.returncode, 0, out.stderr)
+        public = {k: v for k, v in vars(routes).items() if k.isupper() and isinstance(v, str)}
+        self.assertEqual(json.loads(out.stdout.splitlines()[-1]), public)
 
 
 if __name__ == "__main__":

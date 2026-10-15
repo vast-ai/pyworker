@@ -13,6 +13,8 @@ from typing import Callable, List, Optional
 
 import nltk
 
+from workers.openai import routes
+
 # One template serves both lanes; on-demand templates set only the engine var, so the
 # benchmark recovers the model id from it. Only one is ever set.
 _MODEL_NAME_VARS = ("MODEL_NAME", "VLLM_MODEL", "SGLANG_MODEL", "LLAMA_MODEL")
@@ -49,7 +51,9 @@ def _model() -> dict:
 
 
 def _words(chars: int) -> str:
-    """Random dictionary words, about `chars` characters long."""
+    """Random dictionary words, about `chars` characters long. Sized in characters, not
+    words, because the embeddings, rerank, score and speech workloads count characters:
+    a payload of about the reference length weighs about one request."""
     out: List[str] = []
     size = 0
     while size < chars:
@@ -163,20 +167,20 @@ class Benchmark:
 
 
 BENCHMARKS = {
-    "/v1/completions": Benchmark(10, 3, completions_benchmark_generator),
-    "/v1/chat/completions": Benchmark(10, 3, chat_benchmark_generator),
-    "/v1/embeddings": Benchmark(10, 3, embeddings_benchmark_generator),
-    "/v1/rerank": Benchmark(10, 3, rerank_benchmark_generator),
-    "/v1/score": Benchmark(10, 3, score_benchmark_generator),
-    "/v1/audio/speech": Benchmark(4, 2, speech_benchmark_generator),
-    "/v1/audio/speech/batch": Benchmark(4, 2, speech_batch_benchmark_generator),
-    "/v1/chat/completions/batch": Benchmark(10, 3, chat_batch_benchmark_generator),
-    "/v1/audio/generate": Benchmark(2, 1, audio_generate_benchmark_generator),
-    "/v1/images/generations": Benchmark(2, 1, images_benchmark_generator),
+    routes.COMPLETIONS: Benchmark(10, 3, completions_benchmark_generator),
+    routes.CHAT: Benchmark(10, 3, chat_benchmark_generator),
+    routes.EMBEDDINGS: Benchmark(10, 3, embeddings_benchmark_generator),
+    routes.RERANK: Benchmark(10, 3, rerank_benchmark_generator),
+    routes.SCORE: Benchmark(10, 3, score_benchmark_generator),
+    routes.SPEECH: Benchmark(4, 2, speech_benchmark_generator),
+    routes.SPEECH_BATCH: Benchmark(4, 2, speech_batch_benchmark_generator),
+    routes.CHAT_BATCH: Benchmark(10, 3, chat_batch_benchmark_generator),
+    routes.AUDIO_GENERATE: Benchmark(2, 1, audio_generate_benchmark_generator),
+    routes.IMAGES: Benchmark(2, 1, images_benchmark_generator),
     # Upload routes: the payload class builds these.
-    "/v1/images/edits": Benchmark(2, 1),
-    "/v1/audio/transcriptions": Benchmark(4, 2),
-    "/v1/audio/translations": Benchmark(4, 2),
-    "/v1/videos/sync": Benchmark(1, 1),
+    routes.IMAGE_EDITS: Benchmark(2, 1),
+    routes.TRANSCRIPTIONS: Benchmark(4, 2),
+    routes.TRANSLATIONS: Benchmark(4, 2),
+    routes.VIDEO: Benchmark(1, 1),
 }
-DEFAULT_BENCHMARK_ROUTE = "/v1/completions"
+DEFAULT_BENCHMARK_ROUTE = routes.COMPLETIONS
