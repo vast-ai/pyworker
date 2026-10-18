@@ -1,6 +1,3 @@
-import random
-import sys
-
 from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig, BenchmarkConfig
 
 # ComyUI model configuration

@@ -212,7 +212,7 @@ class APIDemo:
             if filename:
                 path = await self.save_image(worker_url, filename, f"comfy_{seed}.png")
                 if not path:
-                    print(f"❌ Failed to fetch image")
+                    print("❌ Failed to fetch image")
             else:
                 print("❌ No image in response")
         else:
@@ -249,7 +249,7 @@ class APIDemo:
             if filename:
                 path = await self.save_image(worker_url, filename, "workflow.png")
                 if not path:
-                    print(f"❌ Failed to fetch image")
+                    print("❌ Failed to fetch image")
             else:
                 print("❌ No image in response")
         else:

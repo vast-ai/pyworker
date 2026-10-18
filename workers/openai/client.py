@@ -371,7 +371,7 @@ class APIDemo:
             raw_args = (tc.get("function") or {}).get("arguments") or "{}"
 
             try:
-                args = json.loads(raw_args) if raw_args.strip() else {}
+                _ = json.loads(raw_args) if raw_args.strip() else {}
             except Exception as e:
                 tool_result = json.dumps({"error": f"Argument parse failed: {str(e)}", "raw_arguments": raw_args})
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": tool_result})
