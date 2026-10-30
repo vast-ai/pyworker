@@ -62,6 +62,13 @@ What each engine actually serves depends on the engine and the loaded model:
 A batch benchmark only sees the HTTP status, and vLLM-Omni answers a speech batch with 200
 even when items fail, so benchmark a speech model on `/v1/audio/speech`.
 
+vLLM-Omni also serves song models on `/v1/audio/speech` (YuE2-3B): lyrics in `input`, in
+sections such as `[Verse]` and `[Chorus]`, the style (genre, instruments, voice, tempo) in
+`instructions`, and the length in `max_new_tokens`, at 25 frames a second; without it the
+song runs until it ends, up to 6 minutes. Set `SPEECH_KIND=music` for these: the speech
+benchmark then sends a 30 s song, and a request counts its frames rather than its
+characters (60 s is one request). Speech batches still count characters.
+
 SGLang's `/v1/score` is a different API (label-token probabilities, `query`/`items`/
 `label_token_ids`); the score benchmark sends vLLM's shape, so benchmark an SGLang
 reranker on `/v1/rerank`.
@@ -91,7 +98,8 @@ tiled to 30 s -- because noise leaves the decoder idle and overstates throughput
 |---|---|---|
 | `BENCHMARK_ROUTE` | `/v1/completions` | The route to benchmark. Served by default; the worker refuses to start if `OPENAI_ROUTES` leaves it out. |
 | `OPENAI_ROUTES` | completions, chat | Comma-separated routes to serve. Must include `BENCHMARK_ROUTE`. |
-| `BENCHMARK_SPEECH_VOICE` | none | `voice` to send when benchmarking speech. |
+| `BENCHMARK_SPEECH_VOICE` | none | `voice` to send when benchmarking speech. Ignored for music. |
+| `SPEECH_KIND` | `speech` | `music` for song models on `/v1/audio/speech`. Any other value refuses to start. |
 | `BENCHMARK_EMBED_CHARS` | 600 | Characters the embeddings benchmark sends. Sized for a 256-token encoder; raise it for a long-context model. |
 
 ## Instance Setup

@@ -25,6 +25,9 @@ WORD_LIST = nltk.corpus.words.words()
 REF_IMAGE_SIDE = 1024      # one reference image, per side
 REF_AUDIO_SECONDS = 30.0   # one reference clip: one Whisper window
 REF_AUDIO_GEN_SECONDS = 10.0
+# Song models (SPEECH_KIND=music) count max_new_tokens in frames, 25 a second.
+BENCHMARK_SONG_FRAMES = 750
+BENCHMARK_SONG_STYLE = "pop, female vocal, piano, bass and drums, 110 BPM, uplifting"
 BATCH_BENCHMARK_ITEMS = 4  # a batch benchmark splits one reference request this many ways
 # A rerank or score request is one query against these documents; each pair fits a
 # 512-token reranker.
@@ -127,6 +130,19 @@ def speech_benchmark_generator() -> dict:
     return {**_model(), "input": _words(500), **_voice()}
 
 
+def song_benchmark_generator() -> dict:
+    """Lyrics in input, the style in instructions. A song ends at its own end token or at
+    max_new_tokens, and is counted at max_new_tokens either way, so the lyrics run well past
+    the frames asked for: a song that ended early would overstate throughput. No voice:
+    song models refuse one."""
+    sections = ("[Verse]", "[Chorus]", "[Verse]", "[Chorus]", "[Bridge]", "[Chorus]")
+    lyrics = "\n\n".join(
+        tag + "\n" + "\n".join(" ".join(random.choices(WORD_LIST, k=6)) for _ in range(4))
+        for tag in sections)
+    return {**_model(), "input": lyrics, "instructions": BENCHMARK_SONG_STYLE,
+            "max_new_tokens": BENCHMARK_SONG_FRAMES}
+
+
 def chat_batch_benchmark_generator() -> dict:
     k = BATCH_BENCHMARK_ITEMS
     return {**_model(),
@@ -183,4 +199,6 @@ BENCHMARKS = {
     routes.TRANSLATIONS: Benchmark(4, 2),
     routes.VIDEO: Benchmark(1, 1),
 }
+# /v1/audio/speech under SPEECH_KIND=music.
+SONG_BENCHMARK = Benchmark(2, 1, song_benchmark_generator)
 DEFAULT_BENCHMARK_ROUTE = routes.COMPLETIONS

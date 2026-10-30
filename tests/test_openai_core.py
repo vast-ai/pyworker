@@ -18,7 +18,7 @@ from unittest import mock
 
 # Instances set these for real; the suite must not read them.
 os.environ["MODEL_NAME"] = "openai/whisper-large-v3"
-for _leak in ("OPENAI_ROUTES", "BENCHMARK_ROUTE", "BENCHMARK_SPEECH_VOICE",
+for _leak in ("OPENAI_ROUTES", "BENCHMARK_ROUTE", "BENCHMARK_SPEECH_VOICE", "SPEECH_KIND",
               "BENCHMARK_EMBED_CHARS", "MODEL_LOG", "MODEL_HEALTH_ENDPOINT", "BACKEND",
               "VLLM_MODEL", "SGLANG_MODEL", "LLAMA_MODEL"):
     os.environ.pop(_leak, None)
@@ -335,6 +335,33 @@ class TestHandlerTable(unittest.TestCase):
                     self.assertRaisesRegex(RuntimeError, says):
                 handlers()
 
+    def test_speech_kind_music_benchmarks_and_counts_songs_on_speech_only(self):
+        for kind in ("music", " Music "):
+            with self.subTest(kind), mock.patch.dict(
+                    os.environ, {"SPEECH_KIND": kind, "BENCHMARK_ROUTE": routes.SPEECH}):
+                h = handlers()
+                self.assertIs(h[routes.SPEECH].workload_calculator, core._song_workload)
+                self.assertIs(h[routes.SPEECH].benchmark_config.generator,
+                              benchmark.song_benchmark_generator)
+                self.assertIs(h[routes.SPEECH_BATCH].workload_calculator,
+                              core._speech_batch_workload)
+
+    def test_speech_is_unchanged_without_speech_kind(self):
+        for env in ({}, {"SPEECH_KIND": ""}, {"SPEECH_KIND": "speech"}):
+            with self.subTest(env), mock.patch.dict(
+                    os.environ, {**env, "BENCHMARK_ROUTE": routes.SPEECH}):
+                speech = handlers()[routes.SPEECH]
+                self.assertIs(speech.workload_calculator, core._speech_workload)
+                self.assertIs(speech.benchmark_config.generator, benchmark.speech_benchmark_generator)
+
+    def test_an_unknown_speech_kind_is_refused(self):
+        """Read as speech, a song model refuses every benchmark request and the worker
+        restarts until someone reads its log."""
+        for kind in ("song", "musc"):
+            with self.subTest(kind), mock.patch.dict(os.environ, {"SPEECH_KIND": kind}), \
+                    self.assertRaisesRegex(RuntimeError, "SPEECH_KIND"):
+                handlers()
+
 
 class TestServedRoutes(unittest.TestCase):
     def test_the_default_is_what_llm_deployments_served_before(self):
@@ -424,6 +451,19 @@ class TestWorkload(unittest.TestCase):
         self.assertEqual(calc({**base, "ref_audio": ["u1", "u2"]}), 3 * ONE_REQUEST)
         self.assertEqual(calc({**base, "ref_audio": "u1", "ref_audio_2": "u2"}), 3 * ONE_REQUEST)
         self.assertEqual(calc({**base, "references": [{"audio_path": "u1"}]}), 2 * ONE_REQUEST)
+
+    def test_a_song_counts_the_frames_asked_for(self):
+        calc = core._song_workload
+        self.assertEqual(calc({"max_new_tokens": core.REF_SONG_FRAMES}), ONE_REQUEST)
+        self.assertEqual(calc({"max_new_tokens": 250}), ONE_REQUEST * 250 / core.REF_SONG_FRAMES)
+        # None or 0 is the engine's default, its 6-minute ceiling, still inside the clamp.
+        ceiling = ONE_REQUEST * core.DEFAULT_SONG_FRAMES / core.REF_SONG_FRAMES
+        self.assertLess(ceiling, CEILING)
+        for data in ({}, {"max_new_tokens": None}, {"max_new_tokens": 0},
+                     {"max_new_tokens": "long"}, {"max_new_tokens": -5}):
+            with self.subTest(data):
+                self.assertEqual(calc(data), ceiling)
+        self.assertEqual(calc({"max_new_tokens": 10**9}), CEILING)
 
     def test_a_speech_batch_counts_the_batch_reference_for_each_item(self):
         calc, item = self.calc(routes.SPEECH_BATCH), {"input": "x" * 500}
@@ -534,6 +574,27 @@ class TestBenchmarks(unittest.TestCase):
                 weight = weigh[route](b.generator() if b.generator else None)
                 self.assertGreaterEqual(weight, 0.5 * ONE_REQUEST)
                 self.assertLessEqual(weight, 2 * ONE_REQUEST)
+
+    def test_the_song_benchmark_is_a_song_request(self):
+        """vLLM-Omni's song models refuse a request without a style, or with a voice."""
+        with mock.patch.dict(os.environ, {"BENCHMARK_SPEECH_VOICE": "alloy"}):
+            body = benchmark.song_benchmark_generator()
+        self.assertNotIn("voice", body)
+        self.assertTrue(body["instructions"].strip())
+        self.assertEqual(body["max_new_tokens"], benchmark.BENCHMARK_SONG_FRAMES)
+        self.assertGreaterEqual(body["max_new_tokens"], 200)   # YuE2's minimum
+        weight = core._song_workload(body)
+        self.assertGreaterEqual(weight, 0.5 * ONE_REQUEST)
+        self.assertLessEqual(weight, 2 * ONE_REQUEST)
+
+    def test_the_song_benchmark_lyrics_outlast_its_frames(self):
+        """A song that ends before its frames is still counted at them, overstating
+        throughput. About two sung words a second, so ask for twice what the frames hold."""
+        lyrics = benchmark.song_benchmark_generator()["input"]
+        words = [w for line in lyrics.splitlines() if not line.startswith("[") for w in line.split()]
+        seconds = benchmark.BENCHMARK_SONG_FRAMES / 25
+        self.assertGreaterEqual(len(words), 2 * 2 * seconds)
+        self.assertEqual(lyrics.splitlines()[0], "[Verse]")   # tags on their own lines
 
     def test_the_embeddings_benchmark_fits_a_256_token_encoder(self):
         """At 2000 chars it tokenised past bge-small's 512 and the worker never became ready."""

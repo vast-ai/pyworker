@@ -29,6 +29,7 @@ from workers.openai.benchmark import (
     REF_IMAGE_SIDE,
     REF_RERANK_CHARS,
     RERANK_DOC_CHARS,
+    SONG_BENCHMARK,
     resolve_model_name as _resolve_model_name,
     benchmark_speech,
     synthetic_png,
@@ -94,6 +95,11 @@ MAX_REQUEST_MULTIPLE = 8.0
 
 REF_IMAGE_PIXELS = REF_IMAGE_SIDE ** 2
 REF_SPEECH_CHARS = 500
+# Songs count frames (25 a second). The reference is twice the benchmark's 30 s, so that a
+# song left at the engine's 6-minute ceiling (9000 frames, also its default) stays inside
+# the clamp.
+REF_SONG_FRAMES = 1500
+DEFAULT_SONG_FRAMES = 9000
 CHARS_PER_TOKEN = 4
 REF_VIDEO_WIDTH, REF_VIDEO_HEIGHT, REF_VIDEO_FRAMES = 832, 480, 33
 REF_VIDEO_FPS = 24                  # a typical default; the engine's is per model
@@ -437,6 +443,12 @@ def _speech_workload(data: Dict[str, Any]) -> float:
     return _in_request_units(chars, REF_SPEECH_CHARS)
 
 
+def _song_workload(data: Dict[str, Any]) -> float:
+    """Frames asked for. None, like 0, is the engine's default: the ceiling."""
+    frames = _number(data.get("max_new_tokens"), DEFAULT_SONG_FRAMES)
+    return _in_request_units(frames if frames > 0 else DEFAULT_SONG_FRAMES, REF_SONG_FRAMES)
+
+
 def _speech_batch_workload(data: Dict[str, Any]) -> float:
     """Each item as on speech; the batch's ref_audio applies to items without one."""
     items = data.get("items")
@@ -530,6 +542,20 @@ UPLOAD_ROUTES = routes.UPLOAD_ROUTES
 DEFAULT_ROUTES = (routes.COMPLETIONS, routes.CHAT)
 
 
+SPEECH_KINDS = ("speech", "music")
+
+
+def speech_kind() -> str:
+    """What /v1/audio/speech serves. vLLM-Omni serves song models there (YuE2), taking lyrics
+    and a style and counting frames; a misspelling refuses to start rather than benchmark
+    them as speech, which they refuse."""
+    raw = os.environ.get("SPEECH_KIND", "")
+    kind = raw.strip().lower() or "speech"
+    if kind not in SPEECH_KINDS:
+        raise RuntimeError(f"SPEECH_KIND={raw!r} is not one of " + ", ".join(SPEECH_KINDS))
+    return kind
+
+
 def benchmark_route() -> str:
     return os.environ.get("BENCHMARK_ROUTE", "").strip() or DEFAULT_BENCHMARK_ROUTE
 
@@ -574,10 +600,17 @@ def build_config(defaults: EngineDefaults) -> dict:
     if benchmarked not in BENCHMARKS:
         raise RuntimeError(f"BENCHMARK_ROUTE={benchmarked!r} is not a route; expected one of "
                            + ", ".join(BENCHMARKS))
+    music = speech_kind() == "music"
+    if music:
+        print("SPEECH_KIND=music: /v1/audio/speech takes lyrics (input), a style "
+              "(instructions) and a length in frames (max_new_tokens)", flush=True)
+        if os.environ.get("BENCHMARK_SPEECH_VOICE"):
+            print("WARNING: BENCHMARK_SPEECH_VOICE is ignored: song models take no voice",
+                  flush=True)
 
     def route(path, **kw):
         if path == benchmarked:
-            b = BENCHMARKS[path]
+            b = SONG_BENCHMARK if music and path == routes.SPEECH else BENCHMARKS[path]
             kw["benchmark_config"] = BenchmarkConfig(
                 generator=b.generator, concurrency=b.concurrency, runs=b.runs)
         return HandlerConfig(route=path, allow_parallel_requests=True,
@@ -590,7 +623,7 @@ def build_config(defaults: EngineDefaults) -> dict:
               request_parser=request_parser),
         route(routes.CHAT_BATCH, workload_calculator=_chat_batch_workload,
               request_parser=request_parser),
-        route(routes.SPEECH, workload_calculator=_speech_workload,
+        route(routes.SPEECH, workload_calculator=_song_workload if music else _speech_workload,
               request_parser=speech_request_parser),
         route(routes.SPEECH_BATCH, workload_calculator=_speech_batch_workload,
               request_parser=speech_batch_request_parser),
